@@ -3,14 +3,19 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/BurntSushi/toml"
 )
 
+type HostConfig struct {
+	Credential string `toml:"credential"`
+}
+
 type Config struct {
-	Credentials map[string]string `toml:"credentials"`
-	AllowedHosts []string          `toml:"allowed_hosts"`
-	allowedSet  map[string]bool
+	ProjectsDir string               `toml:"projects_dir"`
+	Hosts       map[string]HostConfig `toml:"hosts"`
+	hostsSet    map[string]bool
 }
 
 func Load(path string) (*Config, error) {
@@ -27,32 +32,61 @@ func Load(path string) (*Config, error) {
 }
 
 func (c *Config) setDefaults() {
-	if c.Credentials == nil {
-		c.Credentials = make(map[string]string)
+	if c.Hosts == nil {
+		c.Hosts = make(map[string]HostConfig)
 	}
-	if c.AllowedHosts == nil {
-		c.AllowedHosts = []string{}
-	}
-	c.allowedSet = make(map[string]bool, len(c.AllowedHosts))
-	for _, h := range c.AllowedHosts {
-		c.allowedSet[h] = true
+	c.hostsSet = make(map[string]bool, len(c.Hosts))
+	for host := range c.Hosts {
+		c.hostsSet[host] = true
 	}
 }
 
-func (c *Config) AllowAll() {
-	c.allowedSet["*"] = true
+func (c *Config) Merge(overlay *Config) *Config {
+	merged := &Config{
+		ProjectsDir: c.ProjectsDir,
+		Hosts:       make(map[string]HostConfig, len(c.Hosts)+len(overlay.Hosts)),
+		hostsSet:    make(map[string]bool, len(c.Hosts)+len(overlay.Hosts)),
+	}
+	for host, hc := range c.Hosts {
+		merged.Hosts[host] = hc
+		merged.hostsSet[host] = true
+	}
+	for host, hc := range overlay.Hosts {
+		merged.Hosts[host] = hc
+		merged.hostsSet[host] = true
+	}
+	return merged
 }
 
 func (c *Config) IsHostAllowed(host string) bool {
-	if c.allowedSet["*"] {
-		return true
-	}
-	return c.allowedSet[host]
+	return c.hostsSet[host]
 }
 
-func (c *Config) GetCredentialURI(name string) (string, bool) {
-	uri, ok := c.Credentials[name]
-	return uri, ok
+func (c *Config) GetCredentialURI(host string) (string, bool) {
+	hc, ok := c.Hosts[host]
+	if !ok {
+		return "", false
+	}
+	return hc.Credential, true
+}
+
+func (c *Config) AllowAll() {
+	c.hostsSet["*"] = true
+}
+
+func WalkProjectConfig(cwd, stopAt string) (string, error) {
+	for {
+		candidate := filepath.Join(cwd, ".credproxy.toml")
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, nil
+		}
+
+		parent := filepath.Dir(cwd)
+		if parent == cwd || cwd == stopAt {
+			return "", nil
+		}
+		cwd = parent
+	}
 }
 
 func DefaultConfigPath() string {
@@ -60,7 +94,15 @@ func DefaultConfigPath() string {
 	if err != nil {
 		return ""
 	}
-	return home + "/.config/credproxy/credentials.toml"
+	return filepath.Join(home, ".config", "credproxy", "config.toml")
+}
+
+func DefaultProjectsDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, "code")
 }
 
 func DefaultCADir() string {
@@ -68,5 +110,5 @@ func DefaultCADir() string {
 	if err != nil {
 		return ""
 	}
-	return home + "/.config/credproxy"
+	return filepath.Join(home, ".config", "credproxy")
 }
