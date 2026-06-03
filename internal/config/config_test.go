@@ -153,6 +153,25 @@ func TestWalkProjectConfigStopsAtRoot(t *testing.T) {
 	}
 }
 
+func TestAllowAll(t *testing.T) {
+	cfg := &Config{
+		Hosts: map[string]HostConfig{
+			"api.github.com": {Credential: "op://test"},
+		},
+	}
+	cfg.setDefaults()
+
+	if cfg.IsHostAllowed("api.evil.com") {
+		t.Error("api.evil.com should not be allowed before AllowAll")
+	}
+
+	cfg.AllowAll()
+
+	if !cfg.IsHostAllowed("api.evil.com") {
+		t.Error("api.evil.com should be allowed after AllowAll")
+	}
+}
+
 func TestDefaultConfigPath(t *testing.T) {
 	path := DefaultConfigPath()
 	if path == "" {

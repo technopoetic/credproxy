@@ -59,6 +59,9 @@ func (c *Config) Merge(overlay *Config) *Config {
 }
 
 func (c *Config) IsHostAllowed(host string) bool {
+	if c.hostsSet["*"] {
+		return true
+	}
 	return c.hostsSet[host]
 }
 
