@@ -1,0 +1,5 @@
+module github.com/rhibbitts/credproxy
+
+go 1.20
+
+require github.com/BurntSushi/toml v1.6.0

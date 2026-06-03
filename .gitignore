@@ -1,0 +1,23 @@
+# Build output
+/credproxy
+/cmd/credproxy/credproxy
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Runtime config with real credentials
+credentials.toml
+
+# Generated CA certs and keys
+ca.pem
+ca-key.pem
+
+# CodeGraph index
+.codegraph/
