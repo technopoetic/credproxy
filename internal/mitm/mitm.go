@@ -41,11 +41,11 @@ func New(addr string, caProvider *ca.Provider, res *resolver.Resolver, logger *s
 	}
 }
 
-func (p *Proxy) ListenAndServe() error {
-	ln, err := net.Listen("tcp", p.addr)
-	if err != nil {
-		return fmt.Errorf("listen: %w", err)
-	}
+func (p *Proxy) Addr() string {
+	return p.addr
+}
+
+func (p *Proxy) Serve(ln net.Listener) error {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -53,6 +53,14 @@ func (p *Proxy) ListenAndServe() error {
 		}
 		go p.handleConn(conn)
 	}
+}
+
+func (p *Proxy) ListenAndServe() error {
+	ln, err := net.Listen("tcp", p.addr)
+	if err != nil {
+		return fmt.Errorf("listen: %w", err)
+	}
+	return p.Serve(ln)
 }
 
 func (p *Proxy) handleConn(conn net.Conn) {
