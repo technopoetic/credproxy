@@ -22,7 +22,7 @@ import (
 func main() {
 	port := flag.Int("port", 0, "proxy listen port (0 = random in wrap mode, default 8042 in daemon mode)")
 	configPath := flag.String("config", config.DefaultConfigPath(), "path to global config")
-	sentinel := flag.String("sentinel", "__CREDPROXY_TOKEN__", "sentinel string to substitute")
+	sentinel := flag.String("sentinel", "CREDPROXY_TOKEN", "sentinel string to substitute")
 	openProxy := flag.Bool("open-proxy", false, "allow all hosts (not recommended)")
 	flag.Parse()
 
@@ -176,7 +176,7 @@ func runDaemon(cfg *config.Config, caProvider *ca.Provider, res *resolver.Resolv
 	fmt.Println("  credproxy -- claude-code")
 	fmt.Println()
 	fmt.Println("Agent instructions — add to AGENTS.md:")
-	fmt.Println("  When making authenticated API calls, use __CREDPROXY_TOKEN__ as the credential value.")
+	fmt.Println("  When making authenticated API calls, use CREDPROXY_TOKEN as the credential value.")
 	fmt.Println()
 	fmt.Println("press Ctrl-C to exit")
 

