@@ -122,20 +122,30 @@ func runWrap(cfg *config.Config, caProvider *ca.Provider, res *resolver.Resolver
 	childPath := stripSecretStoreCLIs(os.Getenv("PATH"))
 	childEnv := buildChildEnv(cfg, portStr, childPath)
 
-	bin, err := exec.LookPath(command[0])
+	childBin, err := exec.LookPath(command[0])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "command not found: %s\n", command[0])
 		os.Exit(1)
 	}
 
+	child := exec.Command(childBin, command[1:]...)
+	child.Env = childEnv
+	child.Stdin = os.Stdin
+	child.Stdout = os.Stdout
+	child.Stderr = os.Stderr
+
 	go func() {
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-		<-sig
-		ln.Close()
+		for range sig {
+			child.Process.Signal(syscall.SIGINT)
+		}
 	}()
 
-	if err := syscall.Exec(bin, command, childEnv); err != nil {
+	if err := child.Run(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			os.Exit(exitErr.ExitCode())
+		}
 		fmt.Fprintf(os.Stderr, "exec failed: %v\n", err)
 		os.Exit(1)
 	}

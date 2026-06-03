@@ -288,14 +288,14 @@ func (p *Proxy) tunnelConnect(conn net.Conn, host string) {
 	}
 	defer dialConn.Close()
 
-	done := make(chan struct{})
+	done := make(chan struct{}, 2)
 	go func() {
 		io.Copy(dialConn, conn)
-		close(done)
+		done <- struct{}{}
 	}()
 	go func() {
 		io.Copy(conn, dialConn)
-		close(done)
+		done <- struct{}{}
 	}()
 	<-done
 }
