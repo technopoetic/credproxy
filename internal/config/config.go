@@ -27,11 +27,11 @@ func Load(path string) (*Config, error) {
 	if err := toml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
-	cfg.setDefaults()
+	cfg.SetDefaults()
 	return &cfg, nil
 }
 
-func (c *Config) setDefaults() {
+func (c *Config) SetDefaults() {
 	if c.Hosts == nil {
 		c.Hosts = make(map[string]HostConfig)
 	}

@@ -159,7 +159,7 @@ func TestAllowAll(t *testing.T) {
 			"api.github.com": {Credential: "op://test"},
 		},
 	}
-	cfg.setDefaults()
+	cfg.SetDefaults()
 
 	if cfg.IsHostAllowed("api.evil.com") {
 		t.Error("api.evil.com should not be allowed before AllowAll")
