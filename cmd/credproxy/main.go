@@ -119,8 +119,8 @@ func runWrap(cfg *config.Config, caProvider *ca.Provider, res *resolver.Resolver
 
 	_, portStr, _ := net.SplitHostPort(ln.Addr().String())
 
-	childEnv := buildChildEnv(portStr)
 	childPath := stripSecretStoreCLIs(os.Getenv("PATH"))
+	childEnv := buildChildEnv(portStr, childPath)
 
 	bin, err := exec.LookPath(command[0])
 	if err != nil {
@@ -135,7 +135,7 @@ func runWrap(cfg *config.Config, caProvider *ca.Provider, res *resolver.Resolver
 		ln.Close()
 	}()
 
-	if err := syscall.Exec(bin, command, append(childEnv, "PATH="+childPath)); err != nil {
+	if err := syscall.Exec(bin, command, childEnv); err != nil {
 		fmt.Fprintf(os.Stderr, "exec failed: %v\n", err)
 		os.Exit(1)
 	}
@@ -176,24 +176,31 @@ func runDaemon(cfg *config.Config, caProvider *ca.Provider, res *resolver.Resolv
 	}
 }
 
-func buildChildEnv(proxyPort string) []string {
+func buildChildEnv(proxyPort string, childPath string) []string {
 	env := os.Environ()
 	filtered := make([]string, 0, len(env))
 	for _, e := range env {
 		if strings.HasPrefix(e, "OP_SERVICE_ACCOUNT_TOKEN=") {
 			continue
 		}
-		if strings.HasPrefix(e, "HTTPS_PROXY=") || strings.HasPrefix(e, "HTTP_PROXY=") {
+		if strings.HasPrefix(e, "HTTPS_PROXY=") || strings.HasPrefix(e, "HTTP_PROXY=") ||
+			strings.HasPrefix(e, "https_proxy=") || strings.HasPrefix(e, "http_proxy=") {
 			continue
 		}
-		if strings.HasPrefix(e, "NO_PROXY=") {
+		if strings.HasPrefix(e, "NO_PROXY=") || strings.HasPrefix(e, "no_proxy=") {
+			continue
+		}
+		if strings.HasPrefix(e, "PATH=") {
 			continue
 		}
 		filtered = append(filtered, e)
 	}
 	filtered = append(filtered,
+		"PATH="+childPath,
 		"HTTPS_PROXY=http://localhost:"+proxyPort,
+		"https_proxy=http://localhost:"+proxyPort,
 		"NO_PROXY=localhost,127.0.0.1",
+		"no_proxy=localhost,127.0.0.1",
 	)
 	return filtered
 }
