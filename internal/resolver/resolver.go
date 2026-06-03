@@ -12,7 +12,7 @@ import (
 	"github.com/rhibbitts/credproxy/internal/providers"
 )
 
-const defaultSentinel = "**token**"
+const defaultSentinel = "__CREDPROXY_TOKEN__"
 
 type Resolver struct {
 	cfg      *config.Config
