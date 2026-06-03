@@ -13,7 +13,7 @@
 Thumbs.db
 
 # Runtime config with real credentials
-credentials.toml
+config.toml
 
 # Generated CA certs and keys
 ca.pem
