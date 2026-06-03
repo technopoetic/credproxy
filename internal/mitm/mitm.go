@@ -94,7 +94,7 @@ func (p *Proxy) handleConnect(conn net.Conn, req *http.Request) {
 	}
 
 	if !p.resolver.IsHostAllowed(hostname) {
-		conn.Write([]byte("HTTP/1.1 403 Forbidden\r\n\r\nhost not allowed"))
+		p.tunnelConnect(conn, host)
 		return
 	}
 
@@ -152,7 +152,7 @@ func (p *Proxy) handleForward(conn net.Conn, req *http.Request) {
 	}
 
 	if !p.resolver.IsHostAllowed(hostname) {
-		conn.Write([]byte("HTTP/1.1 403 Forbidden\r\n\r\nhost not allowed"))
+		p.forwardDirect(conn, req, host)
 		return
 	}
 
@@ -274,3 +274,56 @@ func (l *oneShotListener) Close() error {
 }
 
 func (l *oneShotListener) Addr() net.Addr { return l.conn.LocalAddr() }
+
+func (p *Proxy) tunnelConnect(conn net.Conn, host string) {
+	if _, err := conn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
+		p.logger.Warn("write tunnel connect response", "err", err)
+		return
+	}
+
+	dialConn, err := net.DialTimeout("tcp", host, 10*time.Second)
+	if err != nil {
+		p.logger.Debug("tunnel dial failed", "host", host, "err", err)
+		return
+	}
+	defer dialConn.Close()
+
+	done := make(chan struct{})
+	go func() {
+		io.Copy(dialConn, conn)
+		close(done)
+	}()
+	go func() {
+		io.Copy(conn, dialConn)
+		close(done)
+	}()
+	<-done
+}
+
+func (p *Proxy) forwardDirect(conn net.Conn, req *http.Request, host string) {
+	outURL := fmt.Sprintf("http://%s%s", host, req.URL.Path)
+	if req.URL.RawQuery != "" {
+		outURL += "?" + req.URL.RawQuery
+	}
+
+	outReq, err := http.NewRequestWithContext(context.Background(), req.Method, outURL, req.Body)
+	if err != nil {
+		conn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\n\r\n"))
+		return
+	}
+	outReq.Host = req.Host
+	for k, vv := range req.Header {
+		for _, v := range vv {
+			outReq.Header.Add(k, v)
+		}
+	}
+
+	resp, err := p.upstream.RoundTrip(outReq)
+	if err != nil {
+		p.logger.Debug("direct upstream error", "host", host, "err", err)
+		conn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\n\r\n"))
+		return
+	}
+	defer resp.Body.Close()
+	resp.Write(conn)
+}

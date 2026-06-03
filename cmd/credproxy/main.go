@@ -120,7 +120,7 @@ func runWrap(cfg *config.Config, caProvider *ca.Provider, res *resolver.Resolver
 	_, portStr, _ := net.SplitHostPort(ln.Addr().String())
 
 	childPath := stripSecretStoreCLIs(os.Getenv("PATH"))
-	childEnv := buildChildEnv(portStr, childPath)
+	childEnv := buildChildEnv(cfg, portStr, childPath)
 
 	bin, err := exec.LookPath(command[0])
 	if err != nil {
@@ -176,7 +176,7 @@ func runDaemon(cfg *config.Config, caProvider *ca.Provider, res *resolver.Resolv
 	}
 }
 
-func buildChildEnv(proxyPort string, childPath string) []string {
+func buildChildEnv(cfg *config.Config, proxyPort string, childPath string) []string {
 	env := os.Environ()
 	filtered := make([]string, 0, len(env))
 	for _, e := range env {
