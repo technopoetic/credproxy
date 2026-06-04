@@ -10,8 +10,6 @@ func TestLoadHostKeyedConfig(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
 	content := `
-projects_dir = "/home/user/code"
-
 [hosts."api.github.com"]
 credential = "op://Personal/github-pat/token"
 
@@ -25,10 +23,6 @@ credential = "op://Business/stripe-live/key"
 	cfg, err := Load(path)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
-	}
-
-	if cfg.ProjectsDir != "/home/user/code" {
-		t.Errorf("ProjectsDir = %q, want /home/user/code", cfg.ProjectsDir)
 	}
 
 	uri, ok := cfg.GetCredentialURI("api.github.com")
@@ -51,8 +45,6 @@ func TestMergeProjectOverlaysGlobal(t *testing.T) {
 	globalDir := t.TempDir()
 	globalPath := filepath.Join(globalDir, "config.toml")
 	globalContent := `
-projects_dir = "/home/user/code"
-
 [hosts."api.github.com"]
 credential = "op://Personal/github-pat/token"
 
@@ -179,9 +171,3 @@ func TestDefaultConfigPath(t *testing.T) {
 	}
 }
 
-func TestDefaultProjectsDir(t *testing.T) {
-	dir := DefaultProjectsDir()
-	if dir == "" {
-		t.Error("DefaultProjectsDir returned empty string")
-	}
-}

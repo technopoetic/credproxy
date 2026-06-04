@@ -73,17 +73,12 @@ func loadMergedConfig(globalPath string) (*config.Config, error) {
 			return nil, err
 		}
 		global = &config.Config{
-			Hosts:       make(map[string]config.HostConfig),
-			ProjectsDir: config.DefaultProjectsDir(),
+			Hosts: make(map[string]config.HostConfig),
 		}
 		global.SetDefaults()
 	}
 
-	stopAt := global.ProjectsDir
-	if stopAt == "" {
-		home, _ := os.UserHomeDir()
-		stopAt = home
-	}
+	stopAt, _ := os.UserHomeDir()
 
 	cwd, err := os.Getwd()
 	if err != nil {

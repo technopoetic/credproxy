@@ -57,8 +57,6 @@ go install github.com/rhibbitts/credproxy/cmd/credproxy@latest
 `~/.config/credproxy/config.toml`:
 
 ```toml
-projects_dir = "/home/you/code"
-
 [hosts."api.github.com"]
 credential = "op://Personal/github-pat/token"
 
@@ -75,7 +73,7 @@ credential = "op://Business/stripe-live/key"
 credential = "op://shipstops/Unsplash app creds/Access Key"
 ```
 
-Project config overlays global. Same host in both → project wins. credproxy walks up from cwd to find `.credproxy.toml`, stopping at `projects_dir` or `~`.
+Project config overlays global. Same host in both → project wins. credproxy walks up from cwd to find `.credproxy.toml`, stopping at `~`.
 
 ### Credential URIs
 

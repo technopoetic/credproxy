@@ -13,9 +13,8 @@ type HostConfig struct {
 }
 
 type Config struct {
-	ProjectsDir string               `toml:"projects_dir"`
-	Hosts       map[string]HostConfig `toml:"hosts"`
-	hostsSet    map[string]bool
+	Hosts    map[string]HostConfig `toml:"hosts"`
+	hostsSet map[string]bool
 }
 
 func Load(path string) (*Config, error) {
@@ -41,11 +40,11 @@ func (c *Config) SetDefaults() {
 	}
 }
 
+
 func (c *Config) Merge(overlay *Config) *Config {
 	merged := &Config{
-		ProjectsDir: c.ProjectsDir,
-		Hosts:       make(map[string]HostConfig, len(c.Hosts)+len(overlay.Hosts)),
-		hostsSet:    make(map[string]bool, len(c.Hosts)+len(overlay.Hosts)),
+		Hosts:    make(map[string]HostConfig, len(c.Hosts)+len(overlay.Hosts)),
+		hostsSet: make(map[string]bool, len(c.Hosts)+len(overlay.Hosts)),
 	}
 	for host, hc := range c.Hosts {
 		merged.Hosts[host] = hc
@@ -98,14 +97,6 @@ func DefaultConfigPath() string {
 		return ""
 	}
 	return filepath.Join(home, ".config", "credproxy", "config.toml")
-}
-
-func DefaultProjectsDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, "code")
 }
 
 func DefaultCADir() string {

@@ -2,8 +2,6 @@
 # Copy to ~/.config/credproxy/config.toml and fill in your values
 # Project-specific overrides go in .credproxy.toml at the project root
 
-projects_dir = "/home/rhibbitts/code"
-
 [hosts."api.github.com"]
 credential = "op://Personal/github-pat/token"
 
