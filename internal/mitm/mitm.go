@@ -94,9 +94,12 @@ func (p *Proxy) handleConnect(conn net.Conn, req *http.Request) {
 	}
 
 	if !p.resolver.IsHostAllowed(hostname) {
+		p.logger.Info("tunnel", "host", hostname)
 		p.tunnelConnect(conn, host)
 		return
 	}
+
+	p.logger.Info("mitm", "host", hostname)
 
 	if _, err := conn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
 		p.logger.Warn("write connect response", "err", err)
@@ -122,7 +125,7 @@ func (p *Proxy) handleConnect(conn net.Conn, req *http.Request) {
 	}
 
 	tlsConn := tls.Server(conn, tlsConf)
-	_ = tlsConn.SetDeadline(time.Now().Add(10 * time.Second))
+	_ = tlsConn.SetDeadline(time.Now().Add(30 * time.Second))
 	if err := tlsConn.Handshake(); err != nil {
 		p.logger.Warn("tls handshake", "host", hostname, "err", err)
 		return
@@ -195,7 +198,10 @@ func (p *Proxy) handleForward(conn net.Conn, req *http.Request) {
 }
 
 func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, target, host string, useTLS bool) {
+	p.logger.Info("request", "method", r.Method, "host", host, "path", r.URL.Path)
+
 	if err := p.resolver.ResolveRequest(r, host); err != nil {
+		p.logger.Error("resolve failed", "host", host, "err", err)
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -224,11 +230,13 @@ func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, target, h
 
 	resp, err := p.upstream.RoundTrip(outReq)
 	if err != nil {
-		p.logger.Debug("upstream error", "host", host, "err", err)
+		p.logger.Error("upstream error", "host", host, "err", err)
 		http.Error(w, "bad gateway", http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
+
+	p.logger.Info("response", "host", host, "status", resp.StatusCode)
 
 	for k, vv := range resp.Header {
 		for _, v := range vv {
