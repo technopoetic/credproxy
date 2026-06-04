@@ -51,6 +51,10 @@ func (r *Resolver) ResolveRequest(req *http.Request, host string) error {
 
 	r.substituteHeaders(req.Header, credential)
 
+	if req.URL.RawQuery != "" && strings.Contains(req.URL.RawQuery, r.sentinel) {
+		req.URL.RawQuery = strings.ReplaceAll(req.URL.RawQuery, r.sentinel, credential)
+	}
+
 	if req.Body != nil && req.Body != http.NoBody {
 		if err := r.substituteBody(req, credential); err != nil {
 			return fmt.Errorf("substituting body: %w", err)

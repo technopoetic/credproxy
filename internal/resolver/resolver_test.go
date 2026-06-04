@@ -52,7 +52,7 @@ func TestHeadersWithSentinelSubstituted(t *testing.T) {
 	)
 
 	req := httptest.NewRequest(http.MethodGet, "https://api.unsplash.com/photos", nil)
-	req.Header.Set("Authorization", "Bearer **token**")
+	req.Header.Set("Authorization", "Bearer CREDPROXY_TOKEN")
 
 	err := r.ResolveRequest(req, "api.unsplash.com")
 	if err != nil {
@@ -70,7 +70,7 @@ func TestBodyWithSentinelSubstituted(t *testing.T) {
 		map[string]string{"mock://stripe/key": "sk_live_abc"},
 	)
 
-	body := strings.NewReader(`{"api_key": "**token**"}`)
+	body := strings.NewReader(`{"api_key": "CREDPROXY_TOKEN"}`)
 	req := httptest.NewRequest(http.MethodPost, "https://api.stripe.com/charges", body)
 
 	err := r.ResolveRequest(req, "api.stripe.com")
@@ -82,8 +82,29 @@ func TestBodyWithSentinelSubstituted(t *testing.T) {
 	if !bytes.Contains(respBody, []byte("sk_live_abc")) {
 		t.Errorf("body not substituted: got %q", string(respBody))
 	}
-	if bytes.Contains(respBody, []byte("**token**")) {
+	if bytes.Contains(respBody, []byte("CREDPROXY_TOKEN")) {
 		t.Errorf("sentinel still present in body: %q", string(respBody))
+	}
+}
+
+func TestQueryStringSubstituted(t *testing.T) {
+	r := newTestResolver(
+		map[string]string{"api.unsplash.com": "mock://unsplash/key"},
+		map[string]string{"mock://unsplash/key": "secret-key-123"},
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "https://api.unsplash.com/search/photos?client_id=CREDPROXY_TOKEN&query=cats", nil)
+
+	err := r.ResolveRequest(req, "api.unsplash.com")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(req.URL.RawQuery, "secret-key-123") {
+		t.Errorf("query string not substituted: got %q", req.URL.RawQuery)
+	}
+	if strings.Contains(req.URL.RawQuery, "CREDPROXY_TOKEN") {
+		t.Errorf("sentinel still present in query: %q", req.URL.RawQuery)
 	}
 }
 
@@ -94,14 +115,14 @@ func TestUnconfiguredHostPassesThrough(t *testing.T) {
 	)
 
 	req := httptest.NewRequest(http.MethodGet, "https://api.unknown.com/data", nil)
-	req.Header.Set("Authorization", "Bearer **token**")
+	req.Header.Set("Authorization", "Bearer CREDPROXY_TOKEN")
 
 	err := r.ResolveRequest(req, "api.unknown.com")
 	if err != nil {
 		t.Fatalf("unconfigured host should not error: %v", err)
 	}
 
-	if got := req.Header.Get("Authorization"); got != "Bearer **token**" {
+	if got := req.Header.Get("Authorization"); got != "Bearer CREDPROXY_TOKEN" {
 		t.Errorf("unconfigured host should pass sentinel through: got %q", got)
 	}
 }
@@ -167,8 +188,8 @@ func TestMultipleSentinelOccurrences(t *testing.T) {
 	)
 
 	req := httptest.NewRequest(http.MethodGet, "https://api.unsplash.com/photos", nil)
-	req.Header.Set("Authorization", "**token** **token**")
-	req.Header.Set("X-Custom", "prefix-**token**-suffix")
+	req.Header.Set("Authorization", "CREDPROXY_TOKEN CREDPROXY_TOKEN")
+	req.Header.Set("X-Custom", "prefix-CREDPROXY_TOKEN-suffix")
 
 	err := r.ResolveRequest(req, "api.unsplash.com")
 	if err != nil {
@@ -190,7 +211,7 @@ func TestProviderResolutionFailure(t *testing.T) {
 	)
 
 	req := httptest.NewRequest(http.MethodGet, "https://api.unsplash.com/photos", nil)
-	req.Header.Set("Authorization", "Bearer **token**")
+	req.Header.Set("Authorization", "Bearer CREDPROXY_TOKEN")
 
 	err := r.ResolveRequest(req, "api.unsplash.com")
 	if err == nil {
