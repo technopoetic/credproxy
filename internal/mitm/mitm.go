@@ -306,6 +306,7 @@ func (p *Proxy) tunnelConnect(conn net.Conn, host string) {
 		done <- struct{}{}
 	}()
 	<-done
+	<-done
 }
 
 func (p *Proxy) forwardDirect(conn net.Conn, req *http.Request, host string) {

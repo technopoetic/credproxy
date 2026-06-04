@@ -7,17 +7,27 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/rhibbitts/credproxy/internal/config"
 	"github.com/rhibbitts/credproxy/internal/providers"
 )
 
 const defaultSentinel = "CREDPROXY_TOKEN"
+const credentialCacheTTL = 5 * time.Minute
+const maxBodySize = 10 * 1024 * 1024
+
+type cacheEntry struct {
+	value   string
+	expires time.Time
+}
 
 type Resolver struct {
 	cfg      *config.Config
 	reg      *providers.Registry
-	cache    map[string]string
+	cache    map[string]cacheEntry
+	mu       sync.Mutex
 	sentinel string
 }
 
@@ -25,7 +35,7 @@ func New(cfg *config.Config, reg *providers.Registry) *Resolver {
 	return &Resolver{
 		cfg:      cfg,
 		reg:      reg,
-		cache:    make(map[string]string),
+		cache:    make(map[string]cacheEntry),
 		sentinel: defaultSentinel,
 	}
 }
@@ -44,7 +54,7 @@ func (r *Resolver) ResolveRequest(req *http.Request, host string) error {
 		return nil
 	}
 
-	credential, err := r.resolveForHost(host, uri, req.Context())
+	credential, err := r.resolveForHost(req.Context(), host, uri)
 	if err != nil {
 		return fmt.Errorf("resolving credential for %s: %w", host, err)
 	}
@@ -64,17 +74,22 @@ func (r *Resolver) ResolveRequest(req *http.Request, host string) error {
 	return nil
 }
 
-func (r *Resolver) resolveForHost(host, uri string, ctx context.Context) (string, error) {
-	if val, ok := r.cache[host]; ok {
-		return val, nil
+func (r *Resolver) resolveForHost(ctx context.Context, host, uri string) (string, error) {
+	r.mu.Lock()
+	if entry, ok := r.cache[host]; ok && time.Now().Before(entry.expires) {
+		r.mu.Unlock()
+		return entry.value, nil
 	}
+	r.mu.Unlock()
 
 	val, err := r.reg.Resolve(ctx, uri)
 	if err != nil {
 		return "", err
 	}
 
-	r.cache[host] = val
+	r.mu.Lock()
+	r.cache[host] = cacheEntry{value: val, expires: time.Now().Add(credentialCacheTTL)}
+	r.mu.Unlock()
 	return val, nil
 }
 
@@ -89,10 +104,13 @@ func (r *Resolver) substituteHeaders(h http.Header, credential string) {
 }
 
 func (r *Resolver) substituteBody(req *http.Request, credential string) error {
-	body, err := io.ReadAll(req.Body)
+	body, err := io.ReadAll(io.LimitReader(req.Body, maxBodySize+1))
 	req.Body.Close()
 	if err != nil {
 		return fmt.Errorf("reading body: %w", err)
+	}
+	if len(body) > maxBodySize {
+		return fmt.Errorf("request body exceeds %d bytes", maxBodySize)
 	}
 
 	if bytes.Contains(body, []byte(r.sentinel)) {

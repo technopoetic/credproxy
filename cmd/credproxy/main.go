@@ -20,13 +20,16 @@ import (
 )
 
 func main() {
-	port := flag.Int("port", 0, "proxy listen port (0 = random in wrap mode, default 8042 in daemon mode)")
 	configPath := flag.String("config", config.DefaultConfigPath(), "path to global config")
 	sentinel := flag.String("sentinel", "CREDPROXY_TOKEN", "sentinel string to substitute")
 	openProxy := flag.Bool("open-proxy", false, "allow all hosts (not recommended)")
 	flag.Parse()
 
 	args := flag.Args()
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "usage: credproxy <command> [args...]\n")
+		os.Exit(1)
+	}
 
 	logPath := filepath.Join(config.DefaultCADir(), "credproxy.log")
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
@@ -60,15 +63,7 @@ func main() {
 	res := resolver.New(cfg, reg)
 	res.SetSentinel(*sentinel)
 
-	if len(args) > 0 {
-		runWrap(cfg, caProvider, res, logger, args)
-	} else {
-		daemonPort := *port
-		if daemonPort == 0 {
-			daemonPort = 8042
-		}
-		runDaemon(cfg, caProvider, res, logger, daemonPort)
-	}
+	runWrap(cfg, caProvider, res, logger, args)
 }
 
 func loadMergedConfig(globalPath string) (*config.Config, error) {
@@ -144,6 +139,11 @@ func runWrap(cfg *config.Config, caProvider *ca.Provider, res *resolver.Resolver
 	child.Stdout = os.Stdout
 	child.Stderr = os.Stderr
 
+	if err := child.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "exec failed: %v\n", err)
+		os.Exit(1)
+	}
+
 	go func() {
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
@@ -152,46 +152,11 @@ func runWrap(cfg *config.Config, caProvider *ca.Provider, res *resolver.Resolver
 		}
 	}()
 
-	if err := child.Run(); err != nil {
+	if err := child.Wait(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			os.Exit(exitErr.ExitCode())
 		}
 		fmt.Fprintf(os.Stderr, "exec failed: %v\n", err)
-		os.Exit(1)
-	}
-}
-
-func runDaemon(cfg *config.Config, caProvider *ca.Provider, res *resolver.Resolver, logger *slog.Logger, port int) {
-	addr := fmt.Sprintf(":%d", port)
-	srv := mitm.New(addr, caProvider, res, logger)
-
-	go func() {
-		sig := make(chan os.Signal, 1)
-		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-		<-sig
-		fmt.Println("\nshutting down")
-		os.Exit(0)
-	}()
-
-	caPath := config.DefaultCADir() + "/ca.pem"
-	fmt.Printf("credproxy listening on %s\n", addr)
-	fmt.Printf("CA cert: %s\n", caPath)
-	fmt.Println()
-	fmt.Println("Trust the CA cert to use HTTPS proxying:")
-	fmt.Println("  macOS:   sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain " + caPath)
-	fmt.Println("  Linux:   sudo cp " + caPath + " /usr/local/share/ca-certificates/credproxy.crt && sudo update-ca-certificates")
-	fmt.Println()
-	fmt.Println("Wrap mode (recommended):")
-	fmt.Println("  credproxy opencode")
-	fmt.Println("  credproxy -- claude-code")
-	fmt.Println()
-	fmt.Println("Agent instructions — add to AGENTS.md:")
-	fmt.Println("  When making authenticated API calls, use CREDPROXY_TOKEN as the credential value.")
-	fmt.Println()
-	fmt.Println("press Ctrl-C to exit")
-
-	if err := srv.ListenAndServe(); err != nil {
-		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
 		os.Exit(1)
 	}
 }
