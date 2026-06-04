@@ -4,7 +4,9 @@
 
 **Goal:** Rewrite credproxy from named-placeholder matching to host-based sentinel substitution with wrap mode and cascading config.
 
-**Architecture:** Config becomes host-keyed (`[hosts."api.unsplash.com"] credential = "op://..."`) instead of credential-name-keyed. Resolver matches on target host, substitutes a single sentinel (`**token**`) everywhere in the request. Main entrypoint detects wrap mode (`credproxy <command>`) vs daemon mode, starts proxy, configures child environment, strips secret-store CLIs, and execs the child. Cascading config loads global `~/.config/credproxy/config.toml` + project `.credproxy.toml` (walked up from cwd), project overlays global.
+**Architecture:** Config becomes host-keyed (`[hosts."api.unsplash.com"] credential = "op://..."`) instead of credential-name-keyed. Resolver matches on target host, substitutes a single sentinel (`CREDPROXY_TOKEN`) everywhere in the request (headers, body, query string). Main entrypoint detects wrap mode (`credproxy <command>`) vs daemon mode, starts proxy, configures child environment, strips secret-store CLIs, and execs the child. Cascading config loads global `~/.config/credproxy/config.toml` + project `.credproxy.toml` (walked up from cwd), project overlays global.
+
+**Status:** All 6 tasks implemented. Remaining: fix TLS handshake timeout on first `op read`, verify query string substitution fixes Unsplash 401 in live testing.
 
 **Tech Stack:** Go 1.21+, BurntSushi/toml v1.6, existing MITM proxy internals (ca, mitm, providers)
 
