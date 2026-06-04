@@ -47,7 +47,7 @@ The sentinel is substituted in headers, query strings, and request bodies. The a
 Requires Go 1.21+ and the `op` CLI (1Password).
 
 ```bash
-go install github.com/rhibbitts/credproxy/cmd/credproxy@latest
+go install github.com/technopoetic/credproxy/cmd/credproxy@latest
 ```
 
 ## Configure

@@ -12,11 +12,11 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/rhibbitts/credproxy/internal/ca"
-	"github.com/rhibbitts/credproxy/internal/config"
-	"github.com/rhibbitts/credproxy/internal/mitm"
-	"github.com/rhibbitts/credproxy/internal/providers"
-	"github.com/rhibbitts/credproxy/internal/resolver"
+	"github.com/technopoetic/credproxy/internal/ca"
+	"github.com/technopoetic/credproxy/internal/config"
+	"github.com/technopoetic/credproxy/internal/mitm"
+	"github.com/technopoetic/credproxy/internal/providers"
+	"github.com/technopoetic/credproxy/internal/resolver"
 )
 
 func main() {

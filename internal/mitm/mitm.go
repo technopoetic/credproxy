@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rhibbitts/credproxy/internal/ca"
-	"github.com/rhibbitts/credproxy/internal/resolver"
+	"github.com/technopoetic/credproxy/internal/ca"
+	"github.com/technopoetic/credproxy/internal/resolver"
 )
 
 type Proxy struct {

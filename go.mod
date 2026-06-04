@@ -1,4 +1,4 @@
-module github.com/rhibbitts/credproxy
+module github.com/technopoetic/credproxy
 
 go 1.20
 

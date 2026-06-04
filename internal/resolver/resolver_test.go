@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rhibbitts/credproxy/internal/config"
-	"github.com/rhibbitts/credproxy/internal/providers"
+	"github.com/technopoetic/credproxy/internal/config"
+	"github.com/technopoetic/credproxy/internal/providers"
 )
 
 type mockProvider struct {

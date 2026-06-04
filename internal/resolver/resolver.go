@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rhibbitts/credproxy/internal/config"
-	"github.com/rhibbitts/credproxy/internal/providers"
+	"github.com/technopoetic/credproxy/internal/config"
+	"github.com/technopoetic/credproxy/internal/providers"
 )
 
 const defaultSentinel = "CREDPROXY_TOKEN"
