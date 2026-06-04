@@ -45,7 +45,13 @@ func (p *OnePasswordProvider) Resolve(ctx context.Context, uri string) (string, 
 }
 
 func (p *OnePasswordProvider) read(ctx context.Context, uri string) (string, error) {
-	cmd := exec.CommandContext(ctx, "op", "read", uri)
+	opPath, err := exec.LookPath("op")
+	if err != nil {
+		return "", fmt.Errorf("op CLI not found on PATH: %w", err)
+	}
+
+	cmd := exec.CommandContext(ctx, opPath, "read", uri)
+	cmd.Args[0] = "credproxy-op"
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
