@@ -127,8 +127,10 @@ func runWrap(cfg *config.Config, caProvider *ca.Provider, res *resolver.Resolver
 
 	_, portStr, _ := net.SplitHostPort(ln.Addr().String())
 
-	childPath := stripSecretStoreCLIs(os.Getenv("PATH"))
-	childEnv := buildChildEnv(cfg, portStr, childPath)
+	childPath, cleanupShims := stripSecretStoreCLIs(os.Getenv("PATH"))
+	defer cleanupShims()
+	caCertPath := filepath.Join(config.DefaultCADir(), "ca.pem")
+	childEnv := buildChildEnv(cfg, portStr, childPath, caCertPath)
 
 	childBin, err := exec.LookPath(command[0])
 	if err != nil {
@@ -194,7 +196,7 @@ func runDaemon(cfg *config.Config, caProvider *ca.Provider, res *resolver.Resolv
 	}
 }
 
-func buildChildEnv(cfg *config.Config, proxyPort string, childPath string) []string {
+func buildChildEnv(cfg *config.Config, proxyPort string, childPath string, caCertPath string) []string {
 	env := os.Environ()
 	filtered := make([]string, 0, len(env))
 	for _, e := range env {
@@ -211,6 +213,10 @@ func buildChildEnv(cfg *config.Config, proxyPort string, childPath string) []str
 		if strings.HasPrefix(e, "PATH=") {
 			continue
 		}
+		if strings.HasPrefix(e, "SSL_CERT_FILE=") || strings.HasPrefix(e, "REQUESTS_CA_BUNDLE=") ||
+			strings.HasPrefix(e, "NODE_EXTRA_CA_CERTS=") || strings.HasPrefix(e, "CURL_CA_BUNDLE=") {
+			continue
+		}
 		filtered = append(filtered, e)
 	}
 	filtered = append(filtered,
@@ -219,25 +225,55 @@ func buildChildEnv(cfg *config.Config, proxyPort string, childPath string) []str
 		"https_proxy=http://localhost:"+proxyPort,
 		"NO_PROXY=localhost,127.0.0.1",
 		"no_proxy=localhost,127.0.0.1",
+		"SSL_CERT_FILE="+caCertPath,
+		"REQUESTS_CA_BUNDLE="+caCertPath,
+		"NODE_EXTRA_CA_CERTS="+caCertPath,
+		"CURL_CA_BUNDLE="+caCertPath,
+		"CREDPROXY_TOKEN=CREDPROXY_TOKEN",
 	)
 	return filtered
 }
 
-func stripSecretStoreCLIs(pathEnv string) string {
+func stripSecretStoreCLIs(pathEnv string) (string, func()) {
 	dirs := filepath.SplitList(pathEnv)
-	strippedCLIs := []string{"op", "bw"}
-	filtered := make([]string, 0, len(dirs))
+	blockedCLIs := []string{"op", "bw"}
+	var shimDir string
 	for _, dir := range dirs {
-		skip := false
-		for _, cli := range strippedCLIs {
+		needsShim := false
+		for _, cli := range blockedCLIs {
 			if _, err := os.Stat(filepath.Join(dir, cli)); err == nil {
-				skip = true
+				needsShim = true
 				break
 			}
 		}
-		if !skip {
-			filtered = append(filtered, dir)
+		if needsShim {
+			if shimDir == "" {
+				tmp, err := os.MkdirTemp("", "credproxy-shims-*")
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "failed to create shim dir: %v\n", err)
+					os.Exit(1)
+				}
+				shimDir = tmp
+			}
+			for _, cli := range blockedCLIs {
+				shimPath := filepath.Join(shimDir, cli)
+				if err := os.WriteFile(shimPath, []byte("#!/bin/sh\nexit 1\n"), 0755); err != nil {
+					fmt.Fprintf(os.Stderr, "failed to write shim for %s: %v\n", cli, err)
+					os.Exit(1)
+				}
+			}
 		}
 	}
-	return strings.Join(filtered, string(filepath.ListSeparator))
+
+	cleanup := func() {
+		if shimDir != "" {
+			os.RemoveAll(shimDir)
+		}
+	}
+
+	if shimDir != "" {
+		dirs = append([]string{shimDir}, dirs...)
+	}
+
+	return strings.Join(dirs, string(filepath.ListSeparator)), cleanup
 }
