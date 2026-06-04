@@ -120,26 +120,34 @@ credproxy is the parent process. It loads config, starts the proxy, configures t
 
 ## Agent Instructions
 
-Add to your AGENTS.md or project instructions:
+Add the following block to your `AGENTS.md` or project instructions:
 
-```
-When making authenticated API calls, use CREDPROXY_TOKEN as the credential value.
-credproxy will substitute the real value based on the target host.
-```
+---
 
-The agent can use `CREDPROXY_TOKEN` as a literal string or reference the `$CREDPROXY_TOKEN` environment variable — both work:
+**credproxy — Credential Injection**
+
+A local MITM proxy intercepts your outbound HTTPS traffic and injects real API credentials automatically. **You never handle real credentials.**
+
+**The rule:** Use the literal string `CREDPROXY_TOKEN` wherever an API key, token, or secret goes — header, query string, or request body. The proxy replaces it with the real value before the request reaches the server.
+
+`$CREDPROXY_TOKEN` in the environment expands to `CREDPROXY_TOKEN`, so both forms are equivalent:
 
 ```bash
-# Header auth
+# Authorization header
 curl -H "Authorization: Bearer CREDPROXY_TOKEN" https://api.github.com/user
-curl -H "Authorization: Client-ID CREDPROXY_TOKEN" https://api.unsplash.com/search/photos?query=dogs
 
-# Query string auth
+# Query string
 curl "https://api.unsplash.com/search/photos?query=dogs&client_id=CREDPROXY_TOKEN"
 
-# Env var (shell expands $CREDPROXY_TOKEN to the literal sentinel string)
-curl -H "X-API-Key: $CREDPROXY_TOKEN" https://api.stripe.com/v1/balance
+# Request body
+curl -X POST https://api.stripe.com/v1/charges -d "api_key=CREDPROXY_TOKEN"
 ```
+
+**Do not** look up credentials via `op`, environment variables, config files, or any other source. `CREDPROXY_TOKEN` is the only credential you should ever use.
+
+If an API call returns 401/403, the target host is probably not configured in credproxy — report that rather than hunting for a real credential.
+
+---
 
 ## Security
 
@@ -151,6 +159,7 @@ curl -H "X-API-Key: $CREDPROXY_TOKEN" https://api.stripe.com/v1/balance
 
 ### What credproxy does NOT prevent
 
+- **Authenticated actions on your behalf** — credproxy prevents credential theft, not credential misuse. A compromised agent can still make authenticated API calls to configured hosts. Limit credential scope (read-only tokens, restricted API keys) to reduce blast radius.
 - **Full OS access** — the agent can still read files, execute commands, and access the network. For execution isolation, use microVMs, gVisor, or similar.
 - **Determined attacker with known paths** — if the agent knows the absolute path to `op` and the `OP_SERVICE_ACCOUNT_TOKEN`, it can bypass credproxy. Wrap mode strips both.
 - **1Password app integration** — if the 1Password desktop app is running with biometric auth, `op read` surfaces an authorization prompt. This is a user-visible backstop, not a bypass.
@@ -162,7 +171,7 @@ credproxy has no management API, no status endpoints, no CLI output containing r
 ## Project Structure
 
 ```
-cmd/credproxy/main.go        Entrypoint (wrap mode + daemon mode)
+cmd/credproxy/main.go        Entrypoint (wrap mode)
 internal/ca/ca.go             Self-signed CA + per-host leaf cert minting
 internal/config/config.go     Host-keyed config with cascading merge
 internal/mitm/mitm.go         MITM proxy (CONNECT + TLS termination + forwarding)
