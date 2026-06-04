@@ -83,6 +83,48 @@ Currently supported:
 |--------|----------|---------|
 | `op://` | 1Password CLI | `op://Vault/item/field` |
 
+## Auth Compatibility
+
+credproxy substitutes a sentinel string in headers, query strings, and request bodies. This works for any auth scheme where the credential is a static value injected into a request. It does not work for schemes that compute a signature or require a challenge-response handshake.
+
+| Auth scheme | Status | Notes |
+|-------------|--------|-------|
+| Bearer token | Works | `Authorization: Bearer CREDPROXY_TOKEN` |
+| API key in header | Works | `X-Api-Key: CREDPROXY_TOKEN` |
+| API key in query string | Works | `?api_key=CREDPROXY_TOKEN` |
+| Basic auth | Needs setup | See below |
+| AWS SigV4 | Won't work | Signature covers headers, body, and timestamp — must be computed pre-flight |
+| Digest auth | Won't work | Challenge-response: server nonce must be hashed with credentials |
+| NTLM / Kerberos | Won't work | Multi-round-trip handshake |
+| mTLS | Won't work | credproxy doesn't attach client certificates to upstream connections |
+| Two-secret APIs | Limited | Only one sentinel; works if `client_id` is public, not if both values are secret |
+
+### Basic auth
+
+HTTP Basic auth requires the `Authorization` header to contain `Basic <base64(username:password)>`. credproxy substitutes the sentinel verbatim, so the credential in your secret store must already be base64-encoded.
+
+**Setup:** encode the `username:password` pair once and store the result:
+
+```bash
+printf 'user@example.com:myapitoken' | base64
+# → dXNlckBleGFtcGxlLmNvbTpteWFwaXRva2Vu
+```
+
+Store that encoded string in 1Password, then configure the host normally:
+
+```toml
+[hosts."your-domain.atlassian.net"]
+credential = "op://Vault/Atlassian/basic-auth-encoded"
+```
+
+The agent uses:
+
+```bash
+curl -H "Authorization: Basic CREDPROXY_TOKEN" https://your-domain.atlassian.net/rest/api/3/...
+```
+
+**API key as username (empty password).** Some APIs (legacy Stripe, some Jenkins configs) treat the API key as the Basic auth username with no password. The encoded form is `base64("sk_live_xxx:")` — note the trailing colon before encoding.
+
 ## Trust the CA Certificate
 
 credproxy generates a self-signed CA on first run at `~/.config/credproxy/ca.pem`. You must trust it once so the agent's HTTP client doesn't reject the MITM certificates:
