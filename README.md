@@ -101,29 +101,24 @@ credproxy substitutes a sentinel string in headers, query strings, and request b
 
 ### Basic auth
 
-HTTP Basic auth requires the `Authorization` header to contain `Basic <base64(username:password)>`. credproxy substitutes the sentinel verbatim, so the credential in your secret store must already be base64-encoded.
+Most HTTP clients encode Basic auth credentials automatically — `curl -u`, Python `requests`, and similar tools base64-encode the credentials before sending. credproxy detects `Authorization: Basic <encoded>` headers, decodes the credential, substitutes the sentinel in the decoded string, and re-encodes. Store the raw credential in your secret store; no manual encoding required.
 
-**Setup:** encode the `username:password` pair once and store the result:
-
-```bash
-printf 'user@example.com:myapitoken' | base64
-# → dXNlckBleGFtcGxlLmNvbTpteWFwaXRva2Vu
-```
-
-Store that encoded string in 1Password, then configure the host normally:
+**Example — Atlassian (Confluence / Jira):**
 
 ```toml
 [hosts."your-domain.atlassian.net"]
-credential = "op://Vault/Atlassian/basic-auth-encoded"
+credential = "op://Vault/Atlassian/api-token"
 ```
 
-The agent uses:
+The credential stored in 1Password is the raw API token (e.g. `myapitoken`). The agent puts the email in the username slot and the sentinel in the password slot:
 
 ```bash
-curl -H "Authorization: Basic CREDPROXY_TOKEN" https://your-domain.atlassian.net/rest/api/3/...
+curl -u "user@example.com:CREDPROXY_TOKEN" https://your-domain.atlassian.net/rest/api/3/myself
 ```
 
-**API key as username (empty password).** Some APIs (legacy Stripe, some Jenkins configs) treat the API key as the Basic auth username with no password. The encoded form is `base64("sk_live_xxx:")` — note the trailing colon before encoding.
+credproxy sees `Basic dXNlckBleGFtcGxlLmNvbTpDUkVEUFJPWFlfVE9LRU4=`, decodes to `user@example.com:CREDPROXY_TOKEN`, substitutes, and re-encodes with the real token.
+
+**API key as username (empty password).** Some APIs (legacy Stripe, some Jenkins configs) treat the API key as the Basic auth username with no password. Use `CREDPROXY_TOKEN:` (empty password) as the curl `-u` argument — the sentinel will be substituted in the username position.
 
 ## Trust the CA Certificate
 

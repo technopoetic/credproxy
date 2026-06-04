@@ -3,6 +3,7 @@ package resolver
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -201,6 +202,90 @@ func TestMultipleSentinelOccurrences(t *testing.T) {
 	}
 	if got := req.Header.Get("X-Custom"); got != "prefix-secret-key-123-suffix" {
 		t.Errorf("sentinel with surrounding text: got %q", got)
+	}
+}
+
+// TestBasicAuthAutoEncoded covers tools like `curl -u user:CREDPROXY_TOKEN` that
+// base64-encode the credentials before sending. credproxy must decode, substitute,
+// and re-encode so the upstream server sees a valid Basic auth header.
+func TestBasicAuthAutoEncoded(t *testing.T) {
+	r := newTestResolver(
+		map[string]string{"your-domain.atlassian.net": "mock://atlassian/token"},
+		map[string]string{"mock://atlassian/token": "myapitoken"},
+	)
+
+	// curl -u "user@example.com:CREDPROXY_TOKEN" produces this header
+	encoded := base64.StdEncoding.EncodeToString([]byte("user@example.com:CREDPROXY_TOKEN"))
+	req := httptest.NewRequest(http.MethodGet, "https://your-domain.atlassian.net/rest/api/3/myself", nil)
+	req.Header.Set("Authorization", "Basic "+encoded)
+
+	if err := r.ResolveRequest(req, "your-domain.atlassian.net"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("user@example.com:myapitoken"))
+	if got := req.Header.Get("Authorization"); got != want {
+		t.Errorf("basic auth not substituted: got %q, want %q", got, want)
+	}
+}
+
+func TestBasicAuthAutoEncodedSentinelOnly(t *testing.T) {
+	r := newTestResolver(
+		map[string]string{"api.example.com": "mock://example/cred"},
+		map[string]string{"mock://example/cred": "user:secret"},
+	)
+
+	// Sentinel is the entire decoded value (both user and pass stored together)
+	encoded := base64.StdEncoding.EncodeToString([]byte("CREDPROXY_TOKEN"))
+	req := httptest.NewRequest(http.MethodGet, "https://api.example.com/", nil)
+	req.Header.Set("Authorization", "Basic "+encoded)
+
+	if err := r.ResolveRequest(req, "api.example.com"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("user:secret"))
+	if got := req.Header.Get("Authorization"); got != want {
+		t.Errorf("basic auth not substituted: got %q, want %q", got, want)
+	}
+}
+
+func TestBasicAuthNoSentinelUnchanged(t *testing.T) {
+	r := newTestResolver(
+		map[string]string{"api.example.com": "mock://example/cred"},
+		map[string]string{"mock://example/cred": "secret"},
+	)
+
+	// Valid Basic auth with no sentinel — must not be modified
+	original := "Basic " + base64.StdEncoding.EncodeToString([]byte("user:alreadyreal"))
+	req := httptest.NewRequest(http.MethodGet, "https://api.example.com/", nil)
+	req.Header.Set("Authorization", original)
+
+	if err := r.ResolveRequest(req, "api.example.com"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if got := req.Header.Get("Authorization"); got != original {
+		t.Errorf("header should be unchanged: got %q, want %q", got, original)
+	}
+}
+
+func TestBasicAuthInvalidBase64FallsThrough(t *testing.T) {
+	r := newTestResolver(
+		map[string]string{"api.example.com": "mock://example/cred"},
+		map[string]string{"mock://example/cred": "secret"},
+	)
+
+	// Literal sentinel (not base64-encoded) — falls through to regular substitution
+	req := httptest.NewRequest(http.MethodGet, "https://api.example.com/", nil)
+	req.Header.Set("Authorization", "Basic CREDPROXY_TOKEN")
+
+	if err := r.ResolveRequest(req, "api.example.com"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if got := req.Header.Get("Authorization"); got != "Basic secret" {
+		t.Errorf("literal sentinel not substituted: got %q, want %q", got, "Basic secret")
 	}
 }
 

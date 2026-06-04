@@ -3,6 +3,7 @@ package resolver
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
@@ -96,11 +97,37 @@ func (r *Resolver) resolveForHost(ctx context.Context, host, uri string) (string
 func (r *Resolver) substituteHeaders(h http.Header, credential string) {
 	for key, values := range h {
 		for i, val := range values {
+			if key == "Authorization" {
+				if newVal, ok := r.substituteBasicAuth(val, credential); ok {
+					h[key][i] = newVal
+					continue
+				}
+			}
 			if strings.Contains(val, r.sentinel) {
 				h[key][i] = strings.ReplaceAll(val, r.sentinel, credential)
 			}
 		}
 	}
+}
+
+// substituteBasicAuth handles tools that automatically base64-encode Basic auth
+// credentials (e.g. curl -u). It decodes the credential, substitutes the sentinel
+// in the decoded string, then re-encodes. Returns false if the header is not Basic
+// auth or the decoded value contains no sentinel.
+func (r *Resolver) substituteBasicAuth(val, credential string) (string, bool) {
+	rest, ok := strings.CutPrefix(val, "Basic ")
+	if !ok {
+		return "", false
+	}
+	decoded, err := base64.StdEncoding.DecodeString(rest)
+	if err != nil {
+		return "", false
+	}
+	if !strings.Contains(string(decoded), r.sentinel) {
+		return "", false
+	}
+	substituted := strings.ReplaceAll(string(decoded), r.sentinel, credential)
+	return "Basic " + base64.StdEncoding.EncodeToString([]byte(substituted)), true
 }
 
 func (r *Resolver) substituteBody(req *http.Request, credential string) error {
