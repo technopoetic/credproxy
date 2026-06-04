@@ -75,6 +75,8 @@ credential = "op://shipstops/Unsplash app creds/Access Key"
 
 Project config overlays global. Same host in both → project wins. credproxy walks up from cwd to find `.credproxy.toml`, stopping at `~`.
 
+The host key must be the exact hostname as it appears in the URL — full FQDN, no scheme, no port, no path. For a URL like `https://my-cluster.region.provider.example.com`, the key is `my-cluster.region.provider.example.com`.
+
 ### Credential URIs
 
 Currently supported:
@@ -92,7 +94,7 @@ credproxy substitutes a sentinel string in headers, query strings, and request b
 | Bearer token | Works | `Authorization: Bearer CREDPROXY_TOKEN` |
 | API key in header | Works | `X-Api-Key: CREDPROXY_TOKEN` |
 | API key in query string | Works | `?api_key=CREDPROXY_TOKEN` |
-| Basic auth | Needs setup | See below |
+| Basic auth | Works | credproxy decodes, substitutes, re-encodes; see below |
 | AWS SigV4 | Won't work | Signature covers headers, body, and timestamp — must be computed pre-flight |
 | Digest auth | Won't work | Challenge-response: server nonce must be hashed with credentials |
 | NTLM / Kerberos | Won't work | Multi-round-trip handshake |
