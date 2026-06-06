@@ -12,8 +12,15 @@ type HostConfig struct {
 	Credential string `toml:"credential"`
 }
 
+type ProfileConfig struct {
+	Hosts map[string]HostConfig `toml:"hosts"`
+	Env   map[string]string     `toml:"env"`
+}
+
 type Config struct {
-	Hosts    map[string]HostConfig `toml:"hosts"`
+	Env      map[string]string        `toml:"env"`
+	Hosts    map[string]HostConfig    `toml:"hosts"`
+	Profiles map[string]ProfileConfig `toml:"profiles"`
 	hostsSet map[string]bool
 }
 
@@ -34,6 +41,21 @@ func (c *Config) SetDefaults() {
 	if c.Hosts == nil {
 		c.Hosts = make(map[string]HostConfig)
 	}
+	if c.Env == nil {
+		c.Env = make(map[string]string)
+	}
+	if c.Profiles == nil {
+		c.Profiles = make(map[string]ProfileConfig)
+	}
+	for name, p := range c.Profiles {
+		if p.Hosts == nil {
+			p.Hosts = make(map[string]HostConfig)
+		}
+		if p.Env == nil {
+			p.Env = make(map[string]string)
+		}
+		c.Profiles[name] = p
+	}
 	c.hostsSet = make(map[string]bool, len(c.Hosts))
 	for host := range c.Hosts {
 		c.hostsSet[host] = true
@@ -43,8 +65,16 @@ func (c *Config) SetDefaults() {
 
 func (c *Config) Merge(overlay *Config) *Config {
 	merged := &Config{
+		Env:      make(map[string]string, len(c.Env)+len(overlay.Env)),
 		Hosts:    make(map[string]HostConfig, len(c.Hosts)+len(overlay.Hosts)),
+		Profiles: make(map[string]ProfileConfig, len(c.Profiles)+len(overlay.Profiles)),
 		hostsSet: make(map[string]bool, len(c.Hosts)+len(overlay.Hosts)),
+	}
+	for k, v := range c.Env {
+		merged.Env[k] = v
+	}
+	for k, v := range overlay.Env {
+		merged.Env[k] = v
 	}
 	for host, hc := range c.Hosts {
 		merged.Hosts[host] = hc
@@ -53,6 +83,32 @@ func (c *Config) Merge(overlay *Config) *Config {
 	for host, hc := range overlay.Hosts {
 		merged.Hosts[host] = hc
 		merged.hostsSet[host] = true
+	}
+	for name, p := range c.Profiles {
+		merged.Profiles[name] = p
+	}
+	for name, p := range overlay.Profiles {
+		if existing, ok := merged.Profiles[name]; ok {
+			ep := ProfileConfig{
+				Hosts: make(map[string]HostConfig, len(existing.Hosts)+len(p.Hosts)),
+				Env:   make(map[string]string, len(existing.Env)+len(p.Env)),
+			}
+			for k, v := range existing.Env {
+				ep.Env[k] = v
+			}
+			for k, v := range p.Env {
+				ep.Env[k] = v
+			}
+			for h, hc := range existing.Hosts {
+				ep.Hosts[h] = hc
+			}
+			for h, hc := range p.Hosts {
+				ep.Hosts[h] = hc
+			}
+			merged.Profiles[name] = ep
+		} else {
+			merged.Profiles[name] = p
+		}
 	}
 	return merged
 }
@@ -70,6 +126,49 @@ func (c *Config) GetCredentialURI(host string) (string, bool) {
 		return "", false
 	}
 	return hc.Credential, true
+}
+
+func (c *Config) EnvVars() map[string]string {
+	return c.Env
+}
+
+func (c *Config) ProfileNames() []string {
+	names := make([]string, 0, len(c.Profiles))
+	for n := range c.Profiles {
+		names = append(names, n)
+	}
+	return names
+}
+
+func (c *Config) ApplyProfile(name string) (*Config, error) {
+	if name == "" {
+		return c, nil
+	}
+	profile, ok := c.Profiles[name]
+	if !ok {
+		return nil, fmt.Errorf("profile %q not found; available: %v", name, c.ProfileNames())
+	}
+	result := &Config{
+		Env:      make(map[string]string, len(c.Env)+len(profile.Env)),
+		Hosts:    make(map[string]HostConfig, len(c.Hosts)+len(profile.Hosts)),
+		Profiles: c.Profiles,
+		hostsSet: make(map[string]bool, len(c.Hosts)+len(profile.Hosts)),
+	}
+	for k, v := range c.Env {
+		result.Env[k] = v
+	}
+	for k, v := range profile.Env {
+		result.Env[k] = v
+	}
+	for host, hc := range c.Hosts {
+		result.Hosts[host] = hc
+		result.hostsSet[host] = true
+	}
+	for host, hc := range profile.Hosts {
+		result.Hosts[host] = hc
+		result.hostsSet[host] = true
+	}
+	return result, nil
 }
 
 func (c *Config) AllowAll() {

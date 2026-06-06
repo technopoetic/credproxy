@@ -6,6 +6,8 @@ v2 core implementation complete and live-tested:
 - Host-based sentinel matching (CREDPROXY_TOKEN)
 - Wrap mode (`credproxy opencode`)
 - Cascading config (global + project)
+- Profiles (`--profile <name>`) for per-environment credential and env var selection
+- Env var injection from config (`[env]` and `[profiles.<name>.env]`)
 - TLS tunneling for unconfigured hosts
 - Query string, header, and body substitution
 - CA cert env vars injected (SSL_CERT_FILE, REQUESTS_CA_BUNDLE, NODE_EXTRA_CA_CERTS, CURL_CA_BUNDLE)
@@ -23,6 +25,7 @@ v2 core implementation complete and live-tested:
 - First `op read` call can cause TLS handshake timeout if 1Password auth prompt takes >30s. The credential caches after first resolution, so subsequent requests work.
 - 1Password biometric prompt shows "tmux" (not "credproxy-op") when running inside tmux — 1Password reads the controlling terminal, not argv[0]
 - Logs go to `~/.config/credproxy/credproxy.log`, not stderr (avoids TUI ghosting)
+- Same-host LLM conflict: when the LLM provider host is also a configured credential host, credproxy substitutes the sentinel in the system prompt body on its way to the LLM, exposing the real credential. Mitigation: use a different LLM provider than the credential host. Documented in README.
 
 ## How to Build & Test
 

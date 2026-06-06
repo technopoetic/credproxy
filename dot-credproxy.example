@@ -5,3 +5,22 @@
 
 [hosts."api.unsplash.com"]
 credential = "op://shipstops/Unsplash app creds/Access Key"
+
+# Project-level env vars (injected into child process)
+[env]
+RAILS_ENV = "development"
+
+# Per-profile credential and env overrides
+[profiles.staging.hosts."api.stripe.com"]
+credential = "op://shipstops/Stripe test/key"
+
+[profiles.staging.env]
+RAILS_ENV = "staging"
+DATABASE_URL = "postgres://staging.db:5432/app"
+
+[profiles.production.hosts."api.stripe.com"]
+credential = "op://shipstops/Stripe live/key"
+
+[profiles.production.env]
+RAILS_ENV = "production"
+DATABASE_URL = "postgres://prod.db:5432/app"

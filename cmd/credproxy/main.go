@@ -21,6 +21,7 @@ import (
 
 func main() {
 	configPath := flag.String("config", config.DefaultConfigPath(), "path to global config")
+	profile := flag.String("profile", "", "config profile to activate")
 	sentinel := flag.String("sentinel", "CREDPROXY_TOKEN", "sentinel string to substitute")
 	openProxy := flag.Bool("open-proxy", false, "allow all hosts (not recommended)")
 	flag.Parse()
@@ -41,7 +42,7 @@ func main() {
 
 	logger := slog.New(slog.NewTextHandler(logFile, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-	cfg, err := loadMergedConfig(*configPath)
+	cfg, err := loadMergedConfig(*configPath, *profile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to load config: %v\n", err)
 		os.Exit(1)
@@ -66,14 +67,16 @@ func main() {
 	runWrap(cfg, caProvider, res, logger, args)
 }
 
-func loadMergedConfig(globalPath string) (*config.Config, error) {
+func loadMergedConfig(globalPath string, profileName string) (*config.Config, error) {
 	global, err := config.Load(globalPath)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			return nil, err
 		}
 		global = &config.Config{
-			Hosts: make(map[string]config.HostConfig),
+			Hosts:    make(map[string]config.HostConfig),
+			Env:      make(map[string]string),
+			Profiles: make(map[string]config.ProfileConfig),
 		}
 		global.SetDefaults()
 	}
@@ -91,7 +94,7 @@ func loadMergedConfig(globalPath string) (*config.Config, error) {
 	}
 
 	if projectPath == "" {
-		return global, nil
+		return global.ApplyProfile(profileName)
 	}
 
 	project, err := config.Load(projectPath)
@@ -99,7 +102,8 @@ func loadMergedConfig(globalPath string) (*config.Config, error) {
 		return nil, fmt.Errorf("loading project config %s: %w", projectPath, err)
 	}
 
-	return global.Merge(project), nil
+	merged := global.Merge(project)
+	return merged.ApplyProfile(profileName)
 }
 
 func runWrap(cfg *config.Config, caProvider *ca.Provider, res *resolver.Resolver, logger *slog.Logger, command []string) {
@@ -158,7 +162,8 @@ func runWrap(cfg *config.Config, caProvider *ca.Provider, res *resolver.Resolver
 
 func buildChildEnv(cfg *config.Config, proxyPort string, childPath string, caCertPath string) []string {
 	env := os.Environ()
-	filtered := make([]string, 0, len(env))
+	configEnv := cfg.EnvVars()
+	filtered := make([]string, 0, len(env)+len(configEnv))
 	for _, e := range env {
 		if strings.HasPrefix(e, "OP_SERVICE_ACCOUNT_TOKEN=") {
 			continue
@@ -177,7 +182,14 @@ func buildChildEnv(cfg *config.Config, proxyPort string, childPath string, caCer
 			strings.HasPrefix(e, "NODE_EXTRA_CA_CERTS=") || strings.HasPrefix(e, "CURL_CA_BUNDLE=") {
 			continue
 		}
+		key := strings.SplitN(e, "=", 2)[0]
+		if _, ok := configEnv[key]; ok {
+			continue
+		}
 		filtered = append(filtered, e)
+	}
+	for k, v := range configEnv {
+		filtered = append(filtered, k+"="+v)
 	}
 	filtered = append(filtered,
 		"PATH="+childPath,

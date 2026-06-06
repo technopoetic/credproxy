@@ -201,6 +201,14 @@ If an API call returns 401/403, the target host is probably not configured in cr
 - **Determined attacker with known paths** — if the agent knows the absolute path to `op` and the `OP_SERVICE_ACCOUNT_TOKEN`, it can bypass credproxy. Wrap mode strips both.
 - **1Password app integration** — if the 1Password desktop app is running with biometric auth, `op read` surfaces an authorization prompt. This is a user-visible backstop, not a bypass.
 
+### Same-host LLM conflict
+
+When the LLM provider host and a configured credential host are the same (e.g., your project uses `api.minimax.io` as both the LLM API and a third-party service API), credproxy will MITM the LLM requests too. The sentinel substitution is indiscriminate — it replaces `CREDPROXY_TOKEN` everywhere in the request body, including the system prompt. The LLM will receive your agent instructions with the real credential value substituted where the sentinel appeared.
+
+This is not a bug — the resolver is doing exactly what it's designed to do. But it means the agent will see the real credential value in its system prompt, violating the core isolation guarantee.
+
+**Mitigation:** Use a different LLM provider than the one configured as a credential host. If your project calls `api.minimax.io` as a third-party API, don't use MiniMax as your LLM provider in the same credproxy session.
+
 ### Zero introspection surface
 
 credproxy has no management API, no status endpoints, no CLI output containing real secrets, and no `/resolve` endpoint. The agent can send traffic through credproxy, but it cannot *ask* credproxy for secrets.
