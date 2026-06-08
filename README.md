@@ -135,11 +135,9 @@ sudo cp ~/.config/credproxy/ca.pem /usr/local/share/ca-certificates/credproxy.cr
 sudo update-ca-certificates
 ```
 
-In wrap mode, credproxy also sets `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, and `CURL_CA_BUNDLE` in the child's environment, pointing at the CA cert. This covers Python, Node.js, and curl without requiring system-level trust — but some runtimes still need the system cert store.
+credproxy also sets `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, and `CURL_CA_BUNDLE` in the child's environment, pointing at the CA cert. This covers Python, Node.js, and curl without requiring system-level trust — but some runtimes still need the system cert store.
 
 ## Use
-
-### Wrap mode (recommended)
 
 ```bash
 cd ~/code/myproject && credproxy opencode
@@ -151,9 +149,65 @@ credproxy is the parent process. It loads config, starts the proxy, configures t
 
 ```
 --config <path>          Override global config path
+--profile <name>         Select config profile (staging, production, etc.)
 --sentinel <string>      Sentinel string to substitute (default: CREDPROXY_TOKEN)
 --open-proxy             Allow all hosts (not recommended)
 ```
+
+## Profiles
+
+Profiles let the same hostname resolve to different credentials depending on environment — staging vs production, for example. Selected at startup with `--profile <name>`, immutable for the session.
+
+```toml
+# Default credential (no profile active)
+[hosts."api.stripe.com"]
+credential = "op://Business/stripe-test/key"
+
+# Staging profile
+[profiles.staging.hosts."api.stripe.com"]
+credential = "op://Business/stripe-test/key"
+
+[profiles.staging.env]
+RAILS_ENV = "staging"
+PORT = "3000"
+
+# Production profile
+[profiles.production.hosts."api.stripe.com"]
+credential = "op://Business/stripe-live/key"
+
+[profiles.production.env]
+RAILS_ENV = "production"
+PORT = "443"
+```
+
+```bash
+credproxy --profile staging opencode
+credproxy --profile production opencode
+```
+
+## Env Var Injection
+
+credproxy injects non-secret environment variables from config into the child process. This replaces tools like direnv/dotenv for environment switching.
+
+```toml
+[env]
+TERM = "xterm-256color"
+EDITOR = "nvim"
+```
+
+To pass the sentinel as an env var value (for tools/SDKs that read API keys from the environment):
+
+```toml
+[env]
+MINIMAX_API_KEY = "CREDPROXY_TOKEN"
+STRIPE_SECRET_KEY = "CREDPROXY_TOKEN"
+```
+
+The child process sees `MINIMAX_API_KEY=CREDPROXY_TOKEN`. When the agent uses that value in an HTTP request to a configured host, credproxy substitutes the real credential at the network layer.
+
+### Overlay cascade
+
+Final child env = parent env ∪ global `[env]` ∪ profile `[profiles.<name>.env]`. Profile wins on conflict. Proxy-injected vars (`HTTPS_PROXY`, `NO_PROXY`, `PATH`, CA cert vars, `CREDPROXY_TOKEN`) always override config env vars.
 
 ## Agent Instructions
 
@@ -198,7 +252,7 @@ If an API call returns 401/403, the target host is probably not configured in cr
 
 - **Authenticated actions on your behalf** — credproxy prevents credential theft, not credential misuse. A compromised agent can still make authenticated API calls to configured hosts. Limit credential scope (read-only tokens, restricted API keys) to reduce blast radius.
 - **Full OS access** — the agent can still read files, execute commands, and access the network. For execution isolation, use microVMs, gVisor, or similar.
-- **Determined attacker with known paths** — if the agent knows the absolute path to `op` and the `OP_SERVICE_ACCOUNT_TOKEN`, it can bypass credproxy. Wrap mode strips both.
+- **Determined attacker with known paths** — if the agent knows the absolute path to `op` and the `OP_SERVICE_ACCOUNT_TOKEN`, it can bypass credproxy. credproxy strips both.
 - **1Password app integration** — if the 1Password desktop app is running with biometric auth, `op read` surfaces an authorization prompt. This is a user-visible backstop, not a bypass.
 
 ### Same-host LLM conflict
@@ -216,7 +270,7 @@ credproxy has no management API, no status endpoints, no CLI output containing r
 ## Project Structure
 
 ```
-cmd/credproxy/main.go        Entrypoint (wrap mode)
+cmd/credproxy/main.go        Entrypoint
 internal/ca/ca.go             Self-signed CA + per-host leaf cert minting
 internal/config/config.go     Host-keyed config with cascading merge
 internal/mitm/mitm.go         MITM proxy (CONNECT + TLS termination + forwarding)
