@@ -1,12 +1,27 @@
 package config
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
+
+// EnvResolver is the minimal interface Config needs to resolve credential
+// URIs. *resolver.Resolver satisfies it.
+type EnvResolver interface {
+	Resolve(ctx context.Context, uri string) (string, error)
+}
+
+// envResolveTimeout caps each individual provider call. The op CLI can hang
+// on a 1Password auth prompt; this keeps startup from blocking indefinitely.
+const envResolveTimeout = 30 * time.Second
 
 type HostConfig struct {
 	Credential string `toml:"credential"`
@@ -130,6 +145,57 @@ func (c *Config) GetCredentialURI(host string) (string, bool) {
 
 func (c *Config) EnvVars() map[string]string {
 	return c.Env
+}
+
+// ResolveEnv walks c.Env and resolves any value starting with "op://" through
+// the supplied EnvResolver, replacing the URI with the resolved secret. Other
+// values pass through untouched. Resolutions run concurrently; each call has
+// its own 30s deadline. The first resolution error fails the whole batch and
+// is returned joined with any other errors.
+func (c *Config) ResolveEnv(ctx context.Context, r EnvResolver) error {
+	type pending struct {
+		key string
+		uri string
+	}
+	var work []pending
+	for k, v := range c.Env {
+		if strings.HasPrefix(v, "op://") {
+			work = append(work, pending{key: k, uri: v})
+		}
+	}
+	if len(work) == 0 {
+		return nil
+	}
+
+	type result struct {
+		key   string
+		value string
+		err   error
+	}
+	results := make(chan result, len(work))
+	var wg sync.WaitGroup
+	for _, p := range work {
+		wg.Add(1)
+		go func(p pending) {
+			defer wg.Done()
+			callCtx, cancel := context.WithTimeout(ctx, envResolveTimeout)
+			defer cancel()
+			val, err := r.Resolve(callCtx, p.uri)
+			results <- result{key: p.key, value: val, err: err}
+		}(p)
+	}
+	wg.Wait()
+	close(results)
+
+	var errs []error
+	for res := range results {
+		if res.err != nil {
+			errs = append(errs, fmt.Errorf("resolving env %s: %w", res.key, res.err))
+			continue
+		}
+		c.Env[res.key] = res.value
+	}
+	return errors.Join(errs...)
 }
 
 func (c *Config) ProfileNames() []string {

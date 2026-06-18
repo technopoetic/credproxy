@@ -8,6 +8,7 @@ v2 core implementation complete and live-tested:
 - Cascading config (global + project)
 - Profiles (`--profile <name>`) for per-environment credential and env var selection
 - Env var injection from config (`[env]` and `[profiles.<name>.env]`)
+- `op://` URI resolution in env values at startup (resolves concurrently, 30s per-call timeout, fail-fast on error)
 - TLS tunneling for unconfigured hosts
 - Query string, header, and body substitution
 - CA cert env vars injected (SSL_CERT_FILE, REQUESTS_CA_BUNDLE, NODE_EXTRA_CA_CERTS, CURL_CA_BUNDLE)

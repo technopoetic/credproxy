@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -63,6 +64,11 @@ func main() {
 
 	res := resolver.New(cfg, reg)
 	res.SetSentinel(*sentinel)
+
+	if err := cfg.ResolveEnv(context.Background(), res); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to resolve env credentials: %v\n", err)
+		os.Exit(1)
+	}
 
 	runWrap(cfg, caProvider, res, logger, args)
 }

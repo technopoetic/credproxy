@@ -45,6 +45,13 @@ func (r *Resolver) SetSentinel(s string) {
 	r.sentinel = s
 }
 
+// Resolve looks up an arbitrary credential URI through the provider registry.
+// It is the host-agnostic counterpart to ResolveRequest and is used for
+// resolving env var values at startup.
+func (r *Resolver) Resolve(ctx context.Context, uri string) (string, error) {
+	return r.reg.Resolve(ctx, uri)
+}
+
 func (r *Resolver) IsHostAllowed(host string) bool {
 	return r.cfg.IsHostAllowed(host)
 }

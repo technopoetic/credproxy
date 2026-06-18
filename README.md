@@ -205,6 +205,20 @@ STRIPE_SECRET_KEY = "CREDPROXY_TOKEN"
 
 The child process sees `MINIMAX_API_KEY=CREDPROXY_TOKEN`. When the agent uses that value in an HTTP request to a configured host, credproxy substitutes the real credential at the network layer.
 
+### Resolving `op://` URIs in env vars
+
+Env values starting with `op://` are resolved at startup via 1Password and the resolved value is written into the child env. Use this when you're comfortable with the wrapped tool reading the real credential directly:
+
+```toml
+[env]
+DATABASE_URL = "op://Business/prod-db/password"
+SOPS_AGE_KEY = "AGE-SECRET-KEY-..."
+```
+
+> **Security caveat:** Unlike the host-based MITM flow, this path puts the real credential in the child process's environment. Any process spawned by the wrapped tool — or any code that reads env vars — can see it. The MITM flow keeps the agent blind; this one hands it the key. Use it for tools/SDKs that need a real secret at startup and that you trust not to exfiltrate it. Failure to resolve aborts startup.
+
+Resolution is concurrent (one `op read` per env var, all running in parallel) with a 30s per-call timeout. Resolved values persist for the lifetime of the child process.
+
 ### Overlay cascade
 
 Final child env = parent env ∪ global `[env]` ∪ profile `[profiles.<name>.env]`. Profile wins on conflict. Proxy-injected vars (`HTTPS_PROXY`, `NO_PROXY`, `PATH`, CA cert vars, `CREDPROXY_TOKEN`) always override config env vars.
