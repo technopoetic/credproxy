@@ -9,7 +9,7 @@ v2 core implementation complete and live-tested:
 - Profiles (`--profile <name>`) for per-environment credential and env var selection
 - Env var injection from config (`[env]` and `[profiles.<name>.env]`)
 - `op://` URI resolution in env values at startup (resolves concurrently, 30s per-call timeout, fail-fast on error)
-- TLS tunneling for unconfigured hosts
+- TLS tunneling for unconfigured hosts (CONNECT) and forward-proxy path (absolute URI) with HTTPS scheme preservation
 - Query string, header, and body substitution
 - CA cert env vars injected (SSL_CERT_FILE, REQUESTS_CA_BUNDLE, NODE_EXTRA_CA_CERTS, CURL_CA_BUNDLE)
 - CREDPROXY_TOKEN env var set to literal sentinel in child env
@@ -40,7 +40,7 @@ go install ./cmd/credproxy/  # install to ~/go/bin/credproxy
 
 - `internal/config/` — Host-keyed config with cascading merge (global + project .credproxy.toml)
 - `internal/resolver/` — Sentinel matching in headers, body, and query strings
-- `internal/mitm/` — MITM proxy for configured hosts, plain tunnel for unconfigured hosts
+- `internal/mitm/` — MITM proxy for configured hosts, plain tunnel for unconfigured hosts, forward-proxy for absolute-URI requests
 - `internal/providers/` — 1Password CLI provider (op read)
 - `internal/ca/` — Self-signed CA + per-host leaf cert minting
 - `cmd/credproxy/` — Wrap mode entrypoint
