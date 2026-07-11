@@ -33,6 +33,19 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := config.EnsureDirs(); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to create config directory: %v\n", err)
+		os.Exit(1)
+	}
+
+	created, err := config.MaybeWriteDefaultConfig()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not write default config: %v\n", err)
+	}
+	if created {
+		fmt.Fprintf(os.Stderr, "Created default config at %s — edit to add your hosts.\n", config.DefaultConfigPath())
+	}
+
 	logPath := filepath.Join(config.DefaultCADir(), "credproxy.log")
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {

@@ -2,6 +2,7 @@ package config
 
 import (
 	"context"
+	_ "embed"
 	"errors"
 	"fmt"
 	"os"
@@ -12,6 +13,9 @@ import (
 
 	"github.com/BurntSushi/toml"
 )
+
+//go:embed default-config.toml
+var defaultConfigTOML []byte
 
 // EnvResolver is the minimal interface Config needs to resolve credential
 // URIs. *resolver.Resolver satisfies it.
@@ -270,4 +274,31 @@ func DefaultCADir() string {
 		return ""
 	}
 	return filepath.Join(home, ".config", "credproxy")
+}
+
+// EnsureDirs creates the ~/.config/credproxy directory if it doesn't exist.
+// Call this before anything else writes into that directory (log file, CA
+// cert, config). MkdirAll is a no-op if the directory already exists.
+func EnsureDirs() error {
+	return os.MkdirAll(DefaultCADir(), 0700)
+}
+
+// MaybeWriteDefaultConfig writes the embedded example config to
+// DefaultConfigPath() if no config file exists yet. Returns true if it
+// created the file. A write error is non-fatal — the caller should warn
+// but continue, since loadMergedConfig handles a missing config gracefully.
+func MaybeWriteDefaultConfig() (bool, error) {
+	path := DefaultConfigPath()
+	if path == "" {
+		return false, fmt.Errorf("could not determine config path")
+	}
+	if _, err := os.Stat(path); err == nil {
+		return false, nil
+	} else if !os.IsNotExist(err) {
+		return false, fmt.Errorf("checking config path: %w", err)
+	}
+	if err := os.WriteFile(path, defaultConfigTOML, 0600); err != nil {
+		return false, fmt.Errorf("writing default config: %w", err)
+	}
+	return true, nil
 }
