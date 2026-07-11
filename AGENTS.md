@@ -2,7 +2,7 @@
 
 ## Project State
 
-v2 core implementation complete and live-tested:
+v2 core implementation complete and live-tested. Tagged v0.1.0:
 - Host-based sentinel matching (CREDPROXY_TOKEN)
 - Wrap mode (`credproxy opencode`)
 - Cascading config (global + project)
@@ -14,6 +14,7 @@ v2 core implementation complete and live-tested:
 - CA cert env vars injected (SSL_CERT_FILE, REQUESTS_CA_BUNDLE, NODE_EXTRA_CA_CERTS, CURL_CA_BUNDLE)
 - CREDPROXY_TOKEN env var set to literal sentinel in child env
 - PATH shim approach (not directory stripping) for blocking op/bw
+- First-run scaffolding: creates `~/.config/credproxy/`, writes example config if none exists, touches log file (fixes crash on fresh install where log OpenFile ran before dir existed)
 
 ## Remaining Work
 
@@ -34,6 +35,8 @@ v2 core implementation complete and live-tested:
 go build ./...          # build all
 go test ./...           # run tests
 go install ./cmd/credproxy/  # install to ~/go/bin/credproxy
+# On a fresh machine (no repo checkout):
+#   go install github.com/technopoetic/credproxy/cmd/credproxy@latest
 ```
 
 ## Architecture
