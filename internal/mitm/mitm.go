@@ -170,7 +170,11 @@ func (p *Proxy) handleForward(conn net.Conn, req *http.Request) {
 		return
 	}
 
-	outURL := fmt.Sprintf("http://%s%s", host, req.URL.Path)
+	scheme := "http"
+	if req.URL.Scheme == "https" {
+		scheme = "https"
+	}
+	outURL := fmt.Sprintf("%s://%s%s", scheme, host, req.URL.Path)
 	if req.URL.RawQuery != "" {
 		outURL += "?" + req.URL.RawQuery
 	}
@@ -310,7 +314,11 @@ func (p *Proxy) tunnelConnect(conn net.Conn, host string) {
 }
 
 func (p *Proxy) forwardDirect(conn net.Conn, req *http.Request, host string) {
-	outURL := fmt.Sprintf("http://%s%s", host, req.URL.Path)
+	scheme := "http"
+	if req.URL.Scheme == "https" {
+		scheme = "https"
+	}
+	outURL := fmt.Sprintf("%s://%s%s", scheme, host, req.URL.Path)
 	if req.URL.RawQuery != "" {
 		outURL += "?" + req.URL.RawQuery
 	}

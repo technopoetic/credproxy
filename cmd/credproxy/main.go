@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -30,6 +31,19 @@ func main() {
 	if len(args) == 0 {
 		fmt.Fprintf(os.Stderr, "usage: credproxy <command> [args...]\n")
 		os.Exit(1)
+	}
+
+	if err := config.EnsureDirs(); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to create config directory: %v\n", err)
+		os.Exit(1)
+	}
+
+	created, err := config.MaybeWriteDefaultConfig()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not write default config: %v\n", err)
+	}
+	if created {
+		fmt.Fprintf(os.Stderr, "Created default config at %s — edit to add your hosts.\n", config.DefaultConfigPath())
 	}
 
 	logPath := filepath.Join(config.DefaultCADir(), "credproxy.log")
@@ -63,6 +77,11 @@ func main() {
 
 	res := resolver.New(cfg, reg)
 	res.SetSentinel(*sentinel)
+
+	if err := cfg.ResolveEnv(context.Background(), res); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to resolve env credentials: %v\n", err)
+		os.Exit(1)
+	}
 
 	runWrap(cfg, caProvider, res, logger, args)
 }

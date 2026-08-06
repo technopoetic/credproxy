@@ -1,9 +1,15 @@
 package config
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestLoadHostKeyedConfig(t *testing.T) {
@@ -488,6 +494,209 @@ credential = "op://shipstops/Unsplash/key"
 	}
 	if _, ok := merged.Profiles["production"]; !ok {
 		t.Error("production profile missing from merged config")
+	}
+}
+
+type stubResolver struct {
+	mu        sync.Mutex
+	resolved  map[string]string
+	err       map[string]error
+	delay     time.Duration
+	callCount int32
+	concurrent int32
+	maxConcurrent int32
+}
+
+func (s *stubResolver) Resolve(ctx context.Context, uri string) (string, error) {
+	cur := atomic.AddInt32(&s.callCount, 1)
+	defer atomic.AddInt32(&s.callCount, -1)
+
+	for {
+		peak := atomic.LoadInt32(&s.maxConcurrent)
+		live := atomic.LoadInt32(&s.concurrent)
+		if live+1 <= peak {
+			break
+		}
+		if atomic.CompareAndSwapInt32(&s.maxConcurrent, peak, live+1) {
+			break
+		}
+	}
+	defer atomic.AddInt32(&s.concurrent, -1)
+	atomic.AddInt32(&s.concurrent, 1)
+
+	_ = cur
+
+	if s.delay > 0 {
+		select {
+		case <-time.After(s.delay):
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if e, ok := s.err[uri]; ok {
+		return "", e
+	}
+	return s.resolved[uri], nil
+}
+
+func TestResolveEnvResolvesOpUris(t *testing.T) {
+	cfg := &Config{
+		Env: map[string]string{
+			"DATABASE_URL": "op://Business/prod-db/password",
+			"PORT":         "5432",
+		},
+	}
+	stub := &stubResolver{
+		resolved: map[string]string{"op://Business/prod-db/password": "secret-123"},
+	}
+
+	if err := cfg.ResolveEnv(context.Background(), stub); err != nil {
+		t.Fatalf("ResolveEnv: %v", err)
+	}
+
+	if got := cfg.Env["DATABASE_URL"]; got != "secret-123" {
+		t.Errorf("DATABASE_URL = %q, want %q", got, "secret-123")
+	}
+	if got := cfg.Env["PORT"]; got != "5432" {
+		t.Errorf("PORT = %q, want %q", got, "5432")
+	}
+}
+
+func TestResolveEnvEmptyEnv(t *testing.T) {
+	cfg := &Config{Env: map[string]string{}}
+	stub := &stubResolver{resolved: map[string]string{}}
+
+	if err := cfg.ResolveEnv(context.Background(), stub); err != nil {
+		t.Fatalf("ResolveEnv: %v", err)
+	}
+	if atomic.LoadInt32(&stub.callCount) != 0 {
+		t.Errorf("expected zero resolver calls for empty env, got %d", stub.callCount)
+	}
+}
+
+func TestResolveEnvNoOpUrisIsNoop(t *testing.T) {
+	cfg := &Config{
+		Env: map[string]string{
+			"PORT":  "3000",
+			"RAILS": "staging",
+		},
+	}
+	stub := &stubResolver{resolved: map[string]string{}}
+
+	if err := cfg.ResolveEnv(context.Background(), stub); err != nil {
+		t.Fatalf("ResolveEnv: %v", err)
+	}
+	if atomic.LoadInt32(&stub.callCount) != 0 {
+		t.Errorf("expected zero resolver calls, got %d", stub.callCount)
+	}
+	if cfg.Env["PORT"] != "3000" || cfg.Env["RAILS"] != "staging" {
+		t.Errorf("non-op:// env values were modified: %v", cfg.Env)
+	}
+}
+
+func TestResolveEnvReportsErrorPerVar(t *testing.T) {
+	cfg := &Config{
+		Env: map[string]string{
+			"GOOD_KEY":   "op://Business/good/secret",
+			"BAD_KEY":    "op://Business/bad/secret",
+			"GOOD_KEY_2": "op://Business/good2/secret",
+		},
+	}
+	stub := &stubResolver{
+		resolved: map[string]string{
+			"op://Business/good/secret":  "g1",
+			"op://Business/good2/secret": "g2",
+		},
+		err: map[string]error{
+			"op://Business/bad/secret": errors.New("not found"),
+		},
+	}
+
+	err := cfg.ResolveEnv(context.Background(), stub)
+	if err == nil {
+		t.Fatal("expected error from ResolveEnv")
+	}
+	if !strings.Contains(err.Error(), "BAD_KEY") || !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error should name the failing key and underlying message: %v", err)
+	}
+
+	if got := cfg.Env["GOOD_KEY"]; got != "g1" {
+		t.Errorf("GOOD_KEY = %q, want %q (successful resolutions should still apply on partial failure)", got, "g1")
+	}
+	if got := cfg.Env["GOOD_KEY_2"]; got != "g2" {
+		t.Errorf("GOOD_KEY_2 = %q, want %q", got, "g2")
+	}
+	if got := cfg.Env["BAD_KEY"]; got != "op://Business/bad/secret" {
+		t.Errorf("BAD_KEY = %q, want unchanged URI on failure", got)
+	}
+}
+
+func TestResolveEnvRunsConcurrently(t *testing.T) {
+	const n = 8
+	cfg := &Config{Env: map[string]string{}}
+	for i := 0; i < n; i++ {
+		key := strings.Repeat("K", 1) + string(rune('A'+i))
+		cfg.Env[key] = "op://Business/key-" + string(rune('A'+i))
+	}
+
+	stub := &stubResolver{
+		resolved: map[string]string{},
+		delay:    100 * time.Millisecond,
+	}
+	for i := 0; i < n; i++ {
+		uri := "op://Business/key-" + string(rune('A'+i))
+		stub.resolved[uri] = "v" + string(rune('A'+i))
+	}
+
+	start := time.Now()
+	if err := cfg.ResolveEnv(context.Background(), stub); err != nil {
+		t.Fatalf("ResolveEnv: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	serialFloor := time.Duration(n) * 100 * time.Millisecond
+	concurrentCeiling := 500 * time.Millisecond
+	if elapsed >= serialFloor {
+		t.Errorf("resolution appears serial: %v >= %v (8 calls of 100ms each)", elapsed, serialFloor)
+	}
+	if elapsed > concurrentCeiling {
+		t.Errorf("resolution took too long: %v > %v", elapsed, concurrentCeiling)
+	}
+
+	if atomic.LoadInt32(&stub.maxConcurrent) < 2 {
+		t.Errorf("expected concurrent execution, max concurrency observed: %d", stub.maxConcurrent)
+	}
+}
+
+func TestResolveEnvPerCallTimeout(t *testing.T) {
+	cfg := &Config{
+		Env: map[string]string{
+			"SLOW_KEY": "op://Business/slow/secret",
+		},
+	}
+	stub := &stubResolver{
+		resolved: map[string]string{},
+		delay:    5 * time.Second,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	err := cfg.ResolveEnv(ctx, stub)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if !strings.Contains(err.Error(), "SLOW_KEY") {
+		t.Errorf("error should name SLOW_KEY: %v", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("ResolveEnv did not honor per-call timeout: %v", elapsed)
 	}
 }
 

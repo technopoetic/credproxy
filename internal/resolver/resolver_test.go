@@ -303,3 +303,27 @@ func TestProviderResolutionFailure(t *testing.T) {
 		t.Fatal("expected error for provider resolution failure")
 	}
 }
+
+func TestResolveHostAgnostic(t *testing.T) {
+	r := newTestResolver(
+		map[string]string{},
+		map[string]string{"mock://anywhere/key": "secret-xyz"},
+	)
+
+	got, err := r.Resolve(context.Background(), "mock://anywhere/key")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got != "secret-xyz" {
+		t.Errorf("Resolve = %q, want %q", got, "secret-xyz")
+	}
+}
+
+func TestResolveUnknownScheme(t *testing.T) {
+	r := newTestResolver(map[string]string{}, map[string]string{})
+
+	_, err := r.Resolve(context.Background(), "vault://some/path")
+	if err == nil {
+		t.Fatal("expected error for unregistered scheme")
+	}
+}

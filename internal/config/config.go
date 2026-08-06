@@ -1,12 +1,31 @@
 package config
 
 import (
+	"context"
+	_ "embed"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
+
+//go:embed default-config.toml
+var defaultConfigTOML []byte
+
+// EnvResolver is the minimal interface Config needs to resolve credential
+// URIs. *resolver.Resolver satisfies it.
+type EnvResolver interface {
+	Resolve(ctx context.Context, uri string) (string, error)
+}
+
+// envResolveTimeout caps each individual provider call. The op CLI can hang
+// on a 1Password auth prompt; this keeps startup from blocking indefinitely.
+const envResolveTimeout = 30 * time.Second
 
 type HostConfig struct {
 	Credential string `toml:"credential"`
@@ -132,6 +151,57 @@ func (c *Config) EnvVars() map[string]string {
 	return c.Env
 }
 
+// ResolveEnv walks c.Env and resolves any value starting with "op://" through
+// the supplied EnvResolver, replacing the URI with the resolved secret. Other
+// values pass through untouched. Resolutions run concurrently; each call has
+// its own 30s deadline. The first resolution error fails the whole batch and
+// is returned joined with any other errors.
+func (c *Config) ResolveEnv(ctx context.Context, r EnvResolver) error {
+	type pending struct {
+		key string
+		uri string
+	}
+	var work []pending
+	for k, v := range c.Env {
+		if strings.HasPrefix(v, "op://") {
+			work = append(work, pending{key: k, uri: v})
+		}
+	}
+	if len(work) == 0 {
+		return nil
+	}
+
+	type result struct {
+		key   string
+		value string
+		err   error
+	}
+	results := make(chan result, len(work))
+	var wg sync.WaitGroup
+	for _, p := range work {
+		wg.Add(1)
+		go func(p pending) {
+			defer wg.Done()
+			callCtx, cancel := context.WithTimeout(ctx, envResolveTimeout)
+			defer cancel()
+			val, err := r.Resolve(callCtx, p.uri)
+			results <- result{key: p.key, value: val, err: err}
+		}(p)
+	}
+	wg.Wait()
+	close(results)
+
+	var errs []error
+	for res := range results {
+		if res.err != nil {
+			errs = append(errs, fmt.Errorf("resolving env %s: %w", res.key, res.err))
+			continue
+		}
+		c.Env[res.key] = res.value
+	}
+	return errors.Join(errs...)
+}
+
 func (c *Config) ProfileNames() []string {
 	names := make([]string, 0, len(c.Profiles))
 	for n := range c.Profiles {
@@ -204,4 +274,31 @@ func DefaultCADir() string {
 		return ""
 	}
 	return filepath.Join(home, ".config", "credproxy")
+}
+
+// EnsureDirs creates the ~/.config/credproxy directory if it doesn't exist.
+// Call this before anything else writes into that directory (log file, CA
+// cert, config). MkdirAll is a no-op if the directory already exists.
+func EnsureDirs() error {
+	return os.MkdirAll(DefaultCADir(), 0700)
+}
+
+// MaybeWriteDefaultConfig writes the embedded example config to
+// DefaultConfigPath() if no config file exists yet. Returns true if it
+// created the file. A write error is non-fatal — the caller should warn
+// but continue, since loadMergedConfig handles a missing config gracefully.
+func MaybeWriteDefaultConfig() (bool, error) {
+	path := DefaultConfigPath()
+	if path == "" {
+		return false, fmt.Errorf("could not determine config path")
+	}
+	if _, err := os.Stat(path); err == nil {
+		return false, nil
+	} else if !os.IsNotExist(err) {
+		return false, fmt.Errorf("checking config path: %w", err)
+	}
+	if err := os.WriteFile(path, defaultConfigTOML, 0600); err != nil {
+		return false, fmt.Errorf("writing default config: %w", err)
+	}
+	return true, nil
 }
