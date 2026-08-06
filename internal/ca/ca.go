@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	_ "embed"
 	"encoding/pem"
 	"fmt"
 	"math/big"
@@ -14,6 +15,14 @@ import (
 	"sync"
 	"time"
 )
+
+// mozillaRoots is a vendored snapshot of the public CA root bundle (sourced
+// from certifi/Mozilla). It has no bearing on credproxy's own CA identity —
+// see WriteTrustBundle for why it's concatenated onto the CA cert rather than
+// mixed into ca.pem itself.
+//
+//go:embed mozilla-bundle.pem
+var mozillaRoots []byte
 
 type Provider struct {
 	cert    *x509.Certificate
@@ -56,6 +65,37 @@ func LoadOrGenerate(dir string) (*Provider, error) {
 
 func (p *Provider) RootPEM() []byte {
 	return p.certPEM
+}
+
+// WriteTrustBundle writes credproxy's CA cert followed by a vendored public
+// root bundle to trust-bundle.pem in dir, and returns its path.
+//
+// Child processes get SSL_CERT_FILE/REQUESTS_CA_BUNDLE/CURL_CA_BUNDLE pointed
+// at this file rather than at ca.pem directly. ca.pem holds only credproxy's
+// own CA (needed to trust MITM'd leaf certs on configured hosts); tools that
+// treat these env vars as a full replacement trust store — not a merge with
+// their own default bundle — would otherwise fail TLS verification on every
+// unconfigured host, since credproxy tunnels those through untouched with
+// their real upstream certificate (see README: "Unconfigured hosts are
+// tunneled through without interception"). Bundling the public roots here
+// means both cases validate. This file is a derived artifact recomputed on
+// every run (unlike ca.pem/ca-key.pem, which are generated once and kept
+// stable), so it always reflects the current CA even if regenerated.
+func (p *Provider) WriteTrustBundle(dir string) (string, error) {
+	bundlePath := filepath.Join(dir, "trust-bundle.pem")
+
+	var buf []byte
+	buf = append(buf, p.certPEM...)
+	if len(buf) > 0 && buf[len(buf)-1] != '\n' {
+		buf = append(buf, '\n')
+	}
+	buf = append(buf, mozillaRoots...)
+
+	if err := os.WriteFile(bundlePath, buf, 0644); err != nil {
+		return "", fmt.Errorf("write trust bundle: %w", err)
+	}
+
+	return bundlePath, nil
 }
 
 func (p *Provider) MintLeaf(host string) (*x509.Certificate, *ecdsa.PrivateKey, error) {

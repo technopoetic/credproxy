@@ -123,7 +123,11 @@ func runWrap(cfg *config.Config, caProvider *ca.Provider, res *resolver.Resolver
 
 	childPath, cleanupShims := stripSecretStoreCLIs(os.Getenv("PATH"))
 	defer cleanupShims()
-	caCertPath := filepath.Join(config.DefaultCADir(), "ca.pem")
+	caCertPath, err := caProvider.WriteTrustBundle(config.DefaultCADir())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to write CA trust bundle: %v\n", err)
+		os.Exit(1)
+	}
 	childEnv := buildChildEnv(cfg, portStr, childPath, caCertPath)
 
 	childBin, err := exec.LookPath(command[0])
