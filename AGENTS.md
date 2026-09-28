@@ -18,7 +18,11 @@ v2 core implementation complete and live-tested. Tagged v0.1.0:
   connection, since only `ca.pem` (credproxy's own CA, no public roots) was exposed before. `ca.pem`/`ca-key.pem`
   themselves are untouched — still the stable, generate-once CA identity used for MITM leaf-cert signing.
 - CREDPROXY_TOKEN env var set to literal sentinel in child env
-- PATH shim approach (not directory stripping) for blocking op/bw
+- PATH shim approach (not directory stripping) for blocking op/bw, hardened for macOS login shells: the shim dir is
+  written to a `path.sh` script exported via `BASH_ENV`, which every non-interactive bash in the child tree sources.
+  This defeats `path_helper` (run by /etc/profile in login shells), which rebuilds PATH with system dirs first and
+  leaves the shim dir present but behind `/usr/local/bin` — where the real `op` lives. `BW_SESSION` is also stripped
+  from the child env so an unlocked Bitwarden session cannot leak through.
 - First-run scaffolding: creates `~/.config/credproxy/`, writes example config if none exists, touches log file (fixes crash on fresh install where log OpenFile ran before dir existed)
 
 ## Remaining Work
@@ -29,6 +33,10 @@ v2 core implementation complete and live-tested. Tagged v0.1.0:
 
 ## Known Issues
 
+- op/bw shim does not cover shells invoked *as* login shells (`bash -l`, `bash -lc`) inside the wrapped child: those
+  read profile files, not `BASH_ENV`, and `path_helper` puts the real `op` back ahead of the shim. The common case
+  (agent tool calls spawning non-interactive `bash -c`, including nested under a login parent) is covered via
+  `BASH_ENV`; a login shell running `which op` in the child still resolves `/usr/local/bin/op`.
 - (Fixed) Real, unconfigured-host TLS connections used to fail `CERTIFICATE_VERIFY_FAILED` in any tool that treats
   `SSL_CERT_FILE`/`REQUESTS_CA_BUNDLE`/`CURL_CA_BUNDLE` as a full trust-store replacement — hit repeatedly (`uv`,
   abby-normal's HF Hub fallback, `gcloud auth`) before being tracked down and fixed at the root via `trust-bundle.pem`

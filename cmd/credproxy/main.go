@@ -140,14 +140,14 @@ func runWrap(cfg *config.Config, caProvider *ca.Provider, res *resolver.Resolver
 
 	_, portStr, _ := net.SplitHostPort(ln.Addr().String())
 
-	childPath, cleanupShims := stripSecretStoreCLIs(os.Getenv("PATH"))
+	childPath, shimDir, cleanupShims := stripSecretStoreCLIs(os.Getenv("PATH"))
 	defer cleanupShims()
 	caCertPath, err := caProvider.WriteTrustBundle(config.DefaultCADir())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to write CA trust bundle: %v\n", err)
 		os.Exit(1)
 	}
-	childEnv := buildChildEnv(cfg, portStr, childPath, caCertPath)
+	childEnv := buildChildEnv(cfg, portStr, childPath, caCertPath, shimDir)
 
 	childBin, err := exec.LookPath(command[0])
 	if err != nil {
@@ -183,12 +183,13 @@ func runWrap(cfg *config.Config, caProvider *ca.Provider, res *resolver.Resolver
 	}
 }
 
-func buildChildEnv(cfg *config.Config, proxyPort string, childPath string, caCertPath string) []string {
+func buildChildEnv(cfg *config.Config, proxyPort string, childPath string, caCertPath string, shimDir string) []string {
 	env := os.Environ()
 	configEnv := cfg.EnvVars()
 	filtered := make([]string, 0, len(env)+len(configEnv))
+	prevBashEnv := os.Getenv("BASH_ENV")
 	for _, e := range env {
-		if strings.HasPrefix(e, "OP_SERVICE_ACCOUNT_TOKEN=") {
+		if strings.HasPrefix(e, "OP_SERVICE_ACCOUNT_TOKEN=") || strings.HasPrefix(e, "BW_SESSION=") {
 			continue
 		}
 		if strings.HasPrefix(e, "HTTPS_PROXY=") || strings.HasPrefix(e, "HTTP_PROXY=") ||
@@ -203,6 +204,11 @@ func buildChildEnv(cfg *config.Config, proxyPort string, childPath string, caCer
 		}
 		if strings.HasPrefix(e, "SSL_CERT_FILE=") || strings.HasPrefix(e, "REQUESTS_CA_BUNDLE=") ||
 			strings.HasPrefix(e, "NODE_EXTRA_CA_CERTS=") || strings.HasPrefix(e, "CURL_CA_BUNDLE=") {
+			continue
+		}
+		// When shims exist we redirect BASH_ENV to credproxy's own script (see
+		// below); the inherited value, if any, is preserved separately.
+		if shimDir != "" && strings.HasPrefix(e, "BASH_ENV=") {
 			continue
 		}
 		key := strings.SplitN(e, "=", 2)[0]
@@ -226,10 +232,21 @@ func buildChildEnv(cfg *config.Config, proxyPort string, childPath string, caCer
 		"CURL_CA_BUNDLE="+caCertPath,
 		"CREDPROXY_TOKEN=CREDPROXY_TOKEN",
 	)
+	if shimDir != "" {
+		// Non-interactive bash sources BASH_ENV at startup. macOS path_helper
+		// (run by /etc/profile in login shells) rebuilds PATH with its own dirs
+		// first, demoting the shim dir behind /usr/local/bin where the real op
+		// lives. Sourcing path.sh re-asserts the shim dir, so nested agent
+		// shells (bash -c under a login parent) still resolve the shims.
+		filtered = append(filtered, "BASH_ENV="+filepath.Join(shimDir, "path.sh"))
+		if prevBashEnv != "" {
+			filtered = append(filtered, "CREDPROXY_PREV_BASH_ENV="+prevBashEnv)
+		}
+	}
 	return filtered
 }
 
-func stripSecretStoreCLIs(pathEnv string) (string, func()) {
+func stripSecretStoreCLIs(pathEnv string) (string, string, func()) {
 	dirs := filepath.SplitList(pathEnv)
 	blockedCLIs := []string{"op", "bw"}
 	var shimDir string
@@ -260,6 +277,26 @@ func stripSecretStoreCLIs(pathEnv string) (string, func()) {
 		}
 	}
 
+	// path.sh is sourced via BASH_ENV by every non-interactive bash in the
+	// child tree. PATH prepending alone is not enough on macOS: path_helper
+	// (login shells) rebuilds PATH with system dirs first, leaving the shim
+	// dir present but behind /usr/local/bin — which is exactly the state that
+	// resolves the real op/bw. So the shim dir is unconditionally prepended
+	// here ("already in PATH" is the wrong predicate; FIRST is what matters).
+	// See the BASH_ENV handling in buildChildEnv.
+	if shimDir != "" {
+		pathShim := "# credproxy: put shim dir FIRST over path_helper's rebuilt PATH\n" +
+			"PATH=\"" + shimDir + ":$PATH\"\n" +
+			"export PATH\n" +
+			"if [ -n \"$CREDPROXY_PREV_BASH_ENV\" ] && [ -f \"$CREDPROXY_PREV_BASH_ENV\" ]; then\n" +
+			"  . \"$CREDPROXY_PREV_BASH_ENV\"\n" +
+			"fi\n"
+		if err := os.WriteFile(filepath.Join(shimDir, "path.sh"), []byte(pathShim), 0755); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to write path.sh shim: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
 	cleanup := func() {
 		if shimDir != "" {
 			os.RemoveAll(shimDir)
@@ -270,5 +307,5 @@ func stripSecretStoreCLIs(pathEnv string) (string, func()) {
 		dirs = append([]string{shimDir}, dirs...)
 	}
 
-	return strings.Join(dirs, string(filepath.ListSeparator)), cleanup
+	return strings.Join(dirs, string(filepath.ListSeparator)), shimDir, cleanup
 }
