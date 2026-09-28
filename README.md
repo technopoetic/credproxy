@@ -259,7 +259,7 @@ If an API call returns 401/403, the target host is probably not configured in cr
 ### What credproxy prevents
 
 - **Casual credential exfiltration** — the agent only has `CREDPROXY_TOKEN` in its context. Env dumps, config file reads, and header logs all yield the sentinel.
-- **Silent secret-store access** — `OP_SERVICE_ACCOUNT_TOKEN` is stripped from the child env, and `op`/`bw` are replaced with shims that exit 1. The agent cannot silently resolve credentials.
+- **Silent secret-store access** — `OP_SERVICE_ACCOUNT_TOKEN` and `BW_SESSION` are stripped from the child env, and `op`/`bw` are replaced with shims that exit 1. The shims survive macOS `path_helper` in nested non-interactive shells (via `BASH_ENV`); shells invoked directly as login shells inside the child are not covered. The agent cannot silently resolve credentials.
 - **Lateral host access** — only configured hosts are MITM'd. Unconfigured hosts are tunneled through without interception.
 
 ### What credproxy does NOT prevent

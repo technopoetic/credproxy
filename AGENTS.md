@@ -28,6 +28,9 @@ v2 core implementation complete and live-tested. Tagged v0.1.0:
 ## Remaining Work
 
 - Cut daemon mode from code (YAGNI — wrap mode handles everything)
+- Consider adding a fixed listen-port option: wrap mode binds an ephemeral port per session, so a long-lived child
+  (e.g. `opencode serve --service`) can outlive the credproxy session and keep failing network calls against the dead
+  proxy URL — hit 2026-09-28 when a Sep 25 service poisoned opencode's provider catalog fetches for days
 - Consider adding `no_proxy_hosts` config to avoid routing LLM traffic through proxy
 - Investigate TLS "bad record MAC" on first `op read` (handshake timeout during 1Password auth prompt)
 
