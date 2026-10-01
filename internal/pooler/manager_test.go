@@ -1,6 +1,7 @@
 package pooler
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,6 +14,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/technopoetic/credproxy/internal/config"
 )
 
 // fakeListenerMain is the body of the subprocess used by lifecycle tests:
@@ -152,5 +155,66 @@ func TestStopKillsProcess(t *testing.T) {
 	p.mu.Unlock()
 	if !stopped {
 		t.Fatal("stop must set the stopped flag so unexpected-exit logging is suppressed")
+	}
+}
+
+func TestManagerNoDatabasesIsNoop(t *testing.T) {
+	m := NewManager(&config.Config{}, testLogger(), io.Discard)
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if m.Env != nil || len(m.Strip) != 0 {
+		t.Fatalf("no-op manager must not set env/strip: env=%v strip=%v", m.Env, m.Strip)
+	}
+	m.Stop() // must be safe with nothing running
+}
+
+func TestManagerMissingBinaryFailsFast(t *testing.T) {
+	cfg := &config.Config{
+		Databases: map[string]config.DatabaseConfig{
+			"mydb": {Engine: "postgres", Host: "h", Port: 5432, User: "u", Password: "p", Database: "d", Env: "DATABASE_URL"},
+		},
+		PgbouncerPath: "/nonexistent/pgbouncer",
+	}
+	m := NewManager(cfg, testLogger(), io.Discard)
+	err := m.Start(context.Background())
+	if err == nil {
+		t.Fatal("expected fail-fast on missing binary")
+	}
+	if !strings.Contains(err.Error(), "pgbouncer") {
+		t.Fatalf("error should name the binary: %v", err)
+	}
+}
+
+func TestComputeEnvURLsAndStrip(t *testing.T) {
+	m := NewManager(&config.Config{}, testLogger(), io.Discard)
+	m.sqlPorts["postgres"] = 6432
+	m.Env = map[string]string{}
+	dbs := map[string]config.DatabaseConfig{
+		"mydb": {Engine: "postgres", Host: "h", Port: 5432, User: "app_user", Password: "REAL", Database: "d", Env: "DATABASE_URL"},
+	}
+	m.computeEnv("postgres", "sesspw", dbs)
+	want := "postgres://app_user:sesspw@127.0.0.1:6432/mydb"
+	if m.Env["DATABASE_URL"] != want {
+		t.Fatalf("env URL wrong: %s", m.Env["DATABASE_URL"])
+	}
+	if len(m.Strip) != 2 || m.Strip[0] != "DATABASE_URL" || m.Strip[1] != "PGPASSWORD" {
+		t.Fatalf("strip list wrong: %v", m.Strip)
+	}
+}
+
+func TestComputeEnvMySQLStrip(t *testing.T) {
+	m := NewManager(&config.Config{}, testLogger(), io.Discard)
+	m.sqlPorts["mysql"] = 3307
+	m.Env = map[string]string{}
+	dbs := map[string]config.DatabaseConfig{
+		"mdb": {Engine: "mysql", Host: "h", Port: 3306, User: "mu", Password: "REAL", Database: "d", Env: "MYSQL_URL"},
+	}
+	m.computeEnv("mysql", "sesspw", dbs)
+	if m.Env["MYSQL_URL"] != "mysql://mu:sesspw@127.0.0.1:3307/mdb" {
+		t.Fatalf("mysql env URL wrong: %s", m.Env["MYSQL_URL"])
+	}
+	if len(m.Strip) != 2 || m.Strip[1] != "MYSQL_PWD" {
+		t.Fatalf("mysql strip list wrong: %v", m.Strip)
 	}
 }
