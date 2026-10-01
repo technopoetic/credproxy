@@ -16,6 +16,7 @@ import (
 	"github.com/technopoetic/credproxy/internal/ca"
 	"github.com/technopoetic/credproxy/internal/config"
 	"github.com/technopoetic/credproxy/internal/mitm"
+	"github.com/technopoetic/credproxy/internal/pooler"
 	"github.com/technopoetic/credproxy/internal/providers"
 	"github.com/technopoetic/credproxy/internal/resolver"
 )
@@ -66,6 +67,11 @@ func main() {
 		cfg.AllowAll()
 	}
 
+	if err := cfg.ValidateDatabases(); err != nil {
+		fmt.Fprintf(os.Stderr, "invalid database config: %v\n", err)
+		os.Exit(1)
+	}
+
 	caProvider, err := ca.LoadOrGenerate(config.DefaultCADir())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to init CA: %v\n", err)
@@ -83,7 +89,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	runWrap(cfg, caProvider, res, logger, args)
+	if err := cfg.ResolveDatabasePasswords(context.Background(), res); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to resolve database credentials: %v\n", err)
+		os.Exit(1)
+	}
+
+	runWrap(cfg, caProvider, res, logger, logFile, args)
 }
 
 func loadMergedConfig(globalPath string, profileName string) (*config.Config, error) {
@@ -125,7 +136,7 @@ func loadMergedConfig(globalPath string, profileName string) (*config.Config, er
 	return merged.ApplyProfile(profileName)
 }
 
-func runWrap(cfg *config.Config, caProvider *ca.Provider, res *resolver.Resolver, logger *slog.Logger, command []string) {
+func runWrap(cfg *config.Config, caProvider *ca.Provider, res *resolver.Resolver, logger *slog.Logger, logFile *os.File, command []string) {
 	addr := ":0"
 	srv := mitm.New(addr, caProvider, res, logger)
 
@@ -138,6 +149,15 @@ func runWrap(cfg *config.Config, caProvider *ca.Provider, res *resolver.Resolver
 
 	go srv.Serve(ln)
 
+	// Poolers start before the child exists so the injected URLs are known.
+	// Start is a no-op when no [databases.*] are configured.
+	mgr := pooler.NewManager(cfg, logger, logFile)
+	if err := mgr.Start(context.Background()); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to start database poolers: %v\n", err)
+		os.Exit(1)
+	}
+	defer mgr.Stop()
+
 	_, portStr, _ := net.SplitHostPort(ln.Addr().String())
 
 	childPath, shimDir, cleanupShims := stripSecretStoreCLIs(os.Getenv("PATH"))
@@ -147,7 +167,7 @@ func runWrap(cfg *config.Config, caProvider *ca.Provider, res *resolver.Resolver
 		fmt.Fprintf(os.Stderr, "failed to write CA trust bundle: %v\n", err)
 		os.Exit(1)
 	}
-	childEnv := buildChildEnv(cfg, portStr, childPath, caCertPath, shimDir)
+	childEnv := buildChildEnv(cfg, portStr, childPath, caCertPath, shimDir, mgr.Env, mgr.Strip)
 
 	childBin, err := exec.LookPath(command[0])
 	if err != nil {
@@ -183,12 +203,17 @@ func runWrap(cfg *config.Config, caProvider *ca.Provider, res *resolver.Resolver
 	}
 }
 
-func buildChildEnv(cfg *config.Config, proxyPort string, childPath string, caCertPath string, shimDir string) []string {
+func buildChildEnv(cfg *config.Config, proxyPort string, childPath string, caCertPath string, shimDir string, poolerEnv map[string]string, poolerStrip []string) []string {
+	strip := make(map[string]bool, len(poolerStrip))
+	for _, k := range poolerStrip {
+		strip[k] = true
+	}
 	env := os.Environ()
 	configEnv := cfg.EnvVars()
-	filtered := make([]string, 0, len(env)+len(configEnv))
+	filtered := make([]string, 0, len(env)+len(configEnv)+len(poolerEnv))
 	prevBashEnv := os.Getenv("BASH_ENV")
 	for _, e := range env {
+		key := strings.SplitN(e, "=", 2)[0]
 		if strings.HasPrefix(e, "OP_SERVICE_ACCOUNT_TOKEN=") || strings.HasPrefix(e, "BW_SESSION=") {
 			continue
 		}
@@ -211,13 +236,23 @@ func buildChildEnv(cfg *config.Config, proxyPort string, childPath string, caCer
 		if shimDir != "" && strings.HasPrefix(e, "BASH_ENV=") {
 			continue
 		}
-		key := strings.SplitN(e, "=", 2)[0]
+		// An inherited DB credential would defeat pooler isolation — the
+		// whole point of [databases.*] is that the child never holds the
+		// real secret.
+		if strip[key] {
+			continue
+		}
 		if _, ok := configEnv[key]; ok {
 			continue
 		}
 		filtered = append(filtered, e)
 	}
 	for k, v := range configEnv {
+		filtered = append(filtered, k+"="+v)
+	}
+	// Pooler URLs go last: os/exec keeps the last value for duplicate keys,
+	// so they win over both inherited values and [env] config values.
+	for k, v := range poolerEnv {
 		filtered = append(filtered, k+"="+v)
 	}
 	filtered = append(filtered,
