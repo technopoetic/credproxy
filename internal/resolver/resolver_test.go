@@ -205,16 +205,14 @@ func TestMultipleSentinelOccurrences(t *testing.T) {
 	}
 }
 
-// TestBasicAuthAutoEncoded covers tools like `curl -u user:CREDPROXY_TOKEN` that
-// base64-encode the credentials before sending. credproxy must decode, substitute,
-// and re-encode so the upstream server sees a valid Basic auth header.
-func TestBasicAuthAutoEncoded(t *testing.T) {
+// TestEncodedAuthBasicCurl covers `curl -u user:CREDPROXY_TOKEN` which base64-encodes
+// the full user:password string before sending Authorization: Basic <b64>.
+func TestEncodedAuthBasicCurl(t *testing.T) {
 	r := newTestResolver(
 		map[string]string{"your-domain.atlassian.net": "mock://atlassian/token"},
 		map[string]string{"mock://atlassian/token": "myapitoken"},
 	)
 
-	// curl -u "user@example.com:CREDPROXY_TOKEN" produces this header
 	encoded := base64.StdEncoding.EncodeToString([]byte("user@example.com:CREDPROXY_TOKEN"))
 	req := httptest.NewRequest(http.MethodGet, "https://your-domain.atlassian.net/rest/api/3/myself", nil)
 	req.Header.Set("Authorization", "Basic "+encoded)
@@ -229,13 +227,37 @@ func TestBasicAuthAutoEncoded(t *testing.T) {
 	}
 }
 
-func TestBasicAuthAutoEncodedSentinelOnly(t *testing.T) {
+// TestEncodedAuthApiKey covers elasticsearch-py with api_key="CREDPROXY_TOKEN",
+// which base64-encodes the string and sends Authorization: ApiKey <b64>.
+func TestEncodedAuthApiKey(t *testing.T) {
+	r := newTestResolver(
+		map[string]string{"search.es.io": "mock://es/key"},
+		map[string]string{"mock://es/key": "myid:myapikey"},
+	)
+
+	encoded := base64.StdEncoding.EncodeToString([]byte("CREDPROXY_TOKEN"))
+	req := httptest.NewRequest(http.MethodGet, "https://search.es.io/", nil)
+	req.Header.Set("Authorization", "ApiKey "+encoded)
+
+	if err := r.ResolveRequest(req, "search.es.io"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := "ApiKey " + base64.StdEncoding.EncodeToString([]byte("myid:myapikey"))
+	if got := req.Header.Get("Authorization"); got != want {
+		t.Errorf("api key auth not substituted: got %q, want %q", got, want)
+	}
+}
+
+// TestEncodedAuthSentinelOnly covers a client that passes the sentinel as the
+// entire credential value (no user: prefix), which some credential stores return
+// as a single opaque token.
+func TestEncodedAuthSentinelOnly(t *testing.T) {
 	r := newTestResolver(
 		map[string]string{"api.example.com": "mock://example/cred"},
 		map[string]string{"mock://example/cred": "user:secret"},
 	)
 
-	// Sentinel is the entire decoded value (both user and pass stored together)
 	encoded := base64.StdEncoding.EncodeToString([]byte("CREDPROXY_TOKEN"))
 	req := httptest.NewRequest(http.MethodGet, "https://api.example.com/", nil)
 	req.Header.Set("Authorization", "Basic "+encoded)
@@ -246,17 +268,18 @@ func TestBasicAuthAutoEncodedSentinelOnly(t *testing.T) {
 
 	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("user:secret"))
 	if got := req.Header.Get("Authorization"); got != want {
-		t.Errorf("basic auth not substituted: got %q, want %q", got, want)
+		t.Errorf("sentinel-only encoded auth not substituted: got %q, want %q", got, want)
 	}
 }
 
-func TestBasicAuthNoSentinelUnchanged(t *testing.T) {
+// TestEncodedAuthNoSentinelUnchanged ensures a valid encoded Authorization header
+// with no sentinel is passed through unmodified.
+func TestEncodedAuthNoSentinelUnchanged(t *testing.T) {
 	r := newTestResolver(
 		map[string]string{"api.example.com": "mock://example/cred"},
 		map[string]string{"mock://example/cred": "secret"},
 	)
 
-	// Valid Basic auth with no sentinel — must not be modified
 	original := "Basic " + base64.StdEncoding.EncodeToString([]byte("user:alreadyreal"))
 	req := httptest.NewRequest(http.MethodGet, "https://api.example.com/", nil)
 	req.Header.Set("Authorization", original)
@@ -270,22 +293,24 @@ func TestBasicAuthNoSentinelUnchanged(t *testing.T) {
 	}
 }
 
-func TestBasicAuthInvalidBase64FallsThrough(t *testing.T) {
+// TestAuthorizationLiteralSentinelSubstituted covers the plain case: the sentinel
+// appears literally in the Authorization header value (no encoding). The plain
+// sentinel check fires first — no decoding needed.
+func TestAuthorizationLiteralSentinelSubstituted(t *testing.T) {
 	r := newTestResolver(
 		map[string]string{"api.example.com": "mock://example/cred"},
 		map[string]string{"mock://example/cred": "secret"},
 	)
 
-	// Literal sentinel (not base64-encoded) — falls through to regular substitution
 	req := httptest.NewRequest(http.MethodGet, "https://api.example.com/", nil)
-	req.Header.Set("Authorization", "Basic CREDPROXY_TOKEN")
+	req.Header.Set("Authorization", "ApiKey CREDPROXY_TOKEN")
 
 	if err := r.ResolveRequest(req, "api.example.com"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if got := req.Header.Get("Authorization"); got != "Basic secret" {
-		t.Errorf("literal sentinel not substituted: got %q, want %q", got, "Basic secret")
+	if got := req.Header.Get("Authorization"); got != "ApiKey secret" {
+		t.Errorf("literal sentinel not substituted: got %q, want %q", got, "ApiKey secret")
 	}
 }
 

@@ -104,37 +104,58 @@ func (r *Resolver) resolveForHost(ctx context.Context, host, uri string) (string
 func (r *Resolver) substituteHeaders(h http.Header, credential string) {
 	for key, values := range h {
 		for i, val := range values {
-			if key == "Authorization" {
-				if newVal, ok := r.substituteBasicAuth(val, credential); ok {
-					h[key][i] = newVal
-					continue
-				}
-			}
+			// Plain sentinel check first — the common case. continue so we don't
+			// also run the encoded path against the original val below.
 			if strings.Contains(val, r.sentinel) {
 				h[key][i] = strings.ReplaceAll(val, r.sentinel, credential)
+				continue
+			}
+			// For Authorization headers, some clients base64-encode credentials
+			// before sending (e.g. curl -u for Basic auth, elasticsearch-py for
+			// ApiKey auth). Try decoding each token to find an encoded sentinel.
+			// TODO: expand to all headers if we encounter encoded credentials
+			// outside of Authorization.
+			if key == "Authorization" {
+				if newVal, ok := r.substituteEncodedAuthHeader(val, credential); ok {
+					h[key][i] = newVal
+				}
 			}
 		}
 	}
 }
 
-// substituteBasicAuth handles tools that automatically base64-encode Basic auth
-// credentials (e.g. curl -u). It decodes the credential, substitutes the sentinel
-// in the decoded string, then re-encodes. Returns false if the header is not Basic
-// auth or the decoded value contains no sentinel.
-func (r *Resolver) substituteBasicAuth(val, credential string) (string, bool) {
-	rest, ok := strings.CutPrefix(val, "Basic ")
-	if !ok {
+// substituteEncodedAuthHeader handles clients that base64-encode credentials
+// before sending them in an Authorization header. It tries to base64-decode each
+// space-separated token; if a decoded token contains the sentinel, it substitutes
+// and re-encodes that token. All matching tokens are substituted.
+//
+// Only standard base64 is attempted. URL-safe base64 (-/_) is not currently
+// handled — add base64.URLEncoding fallback here if that becomes necessary.
+//
+// Returns the modified header value and true if any substitution was made,
+// or "", false if no encoded sentinel was found.
+func (r *Resolver) substituteEncodedAuthHeader(val, credential string) (string, bool) {
+	tokens := strings.Split(val, " ")
+	modified := false
+	for i, token := range tokens {
+		if token == "" {
+			continue
+		}
+		decoded, err := base64.StdEncoding.DecodeString(token)
+		if err != nil {
+			continue
+		}
+		if !strings.Contains(string(decoded), r.sentinel) {
+			continue
+		}
+		substituted := strings.ReplaceAll(string(decoded), r.sentinel, credential)
+		tokens[i] = base64.StdEncoding.EncodeToString([]byte(substituted))
+		modified = true
+	}
+	if !modified {
 		return "", false
 	}
-	decoded, err := base64.StdEncoding.DecodeString(rest)
-	if err != nil {
-		return "", false
-	}
-	if !strings.Contains(string(decoded), r.sentinel) {
-		return "", false
-	}
-	substituted := strings.ReplaceAll(string(decoded), r.sentinel, credential)
-	return "Basic " + base64.StdEncoding.EncodeToString([]byte(substituted)), true
+	return strings.Join(tokens, " "), true
 }
 
 func (r *Resolver) substituteBody(req *http.Request, credential string) error {
