@@ -700,3 +700,104 @@ func TestResolveEnvPerCallTimeout(t *testing.T) {
 	}
 }
 
+
+func TestLoadDatabases(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	tomlData := `
+[databases.mydb]
+engine = "postgres"
+host = "db.example.com"
+port = 5432
+user = "app_user"
+password = "op://Private/mydb/password"
+database = "appdb"
+params = "sslmode=require"
+env = "DATABASE_URL"
+
+[databases.other]
+engine = "mysql"
+host = "mysql.example.com"
+port = 3306
+user = "mu"
+password = "literal"
+database = "mdb"
+env = "OTHER_DB_URL"
+`
+	if err := os.WriteFile(path, []byte(tomlData), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Databases) != 2 {
+		t.Fatalf("expected 2 databases, got %d", len(cfg.Databases))
+	}
+	db := cfg.Databases["mydb"]
+	if db.Engine != "postgres" || db.Host != "db.example.com" || db.Port != 5432 ||
+		db.User != "app_user" || db.Password != "op://Private/mydb/password" ||
+		db.Database != "appdb" || db.Params != "sslmode=require" || db.Env != "DATABASE_URL" {
+		t.Fatalf("mydb parsed wrong: %+v", db)
+	}
+	if cfg.Databases["other"].Engine != "mysql" {
+		t.Fatalf("other parsed wrong: %+v", cfg.Databases["other"])
+	}
+}
+
+func TestMergeDatabasesProjectWinsPerEntry(t *testing.T) {
+	global := &Config{
+		Env:      map[string]string{},
+		Hosts:    map[string]HostConfig{},
+		Profiles: map[string]ProfileConfig{},
+		Databases: map[string]DatabaseConfig{
+			"mydb":  {Engine: "postgres", Host: "global.example.com", Port: 5432, User: "u", Password: "p", Database: "d", Env: "DATABASE_URL"},
+			"gonly": {Engine: "postgres", Host: "g.example.com", Port: 5432, User: "u", Password: "p", Database: "d", Env: "G_URL"},
+		},
+	}
+	overlay := &Config{
+		Env:      map[string]string{},
+		Hosts:    map[string]HostConfig{},
+		Profiles: map[string]ProfileConfig{},
+		Databases: map[string]DatabaseConfig{
+			"mydb": {Engine: "postgres", Host: "project.example.com", Port: 5433, User: "u2", Password: "p2", Database: "d2", Env: "DATABASE_URL"},
+		},
+	}
+	merged := global.Merge(overlay)
+	if merged.Databases["mydb"].Host != "project.example.com" {
+		t.Fatalf("overlay entry should win wholesale: %+v", merged.Databases["mydb"])
+	}
+	if _, ok := merged.Databases["gonly"]; !ok {
+		t.Fatal("global-only entry must survive merge")
+	}
+}
+
+func TestMergeBinaryPathOverrides(t *testing.T) {
+	global := &Config{Env: map[string]string{}, Hosts: map[string]HostConfig{}, Profiles: map[string]ProfileConfig{}, PgbouncerPath: "/g/pgbouncer"}
+	overlay := &Config{Env: map[string]string{}, Hosts: map[string]HostConfig{}, Profiles: map[string]ProfileConfig{}, ProxySQLPath: "/p/proxysql"}
+	merged := global.Merge(overlay)
+	if merged.PgbouncerPath != "/g/pgbouncer" || merged.ProxySQLPath != "/p/proxysql" {
+		t.Fatalf("scalar path merge wrong: %+v", merged)
+	}
+}
+
+func TestApplyProfileDatabases(t *testing.T) {
+	cfg := &Config{
+		Env:       map[string]string{},
+		Hosts:     map[string]HostConfig{},
+		Databases: map[string]DatabaseConfig{
+			"mydb": {Engine: "postgres", Host: "prod.example.com", Port: 5432, User: "u", Password: "p", Database: "d", Env: "DATABASE_URL"},
+		},
+		Profiles: map[string]ProfileConfig{
+			"staging": {Hosts: map[string]HostConfig{}, Env: map[string]string{}, Databases: map[string]DatabaseConfig{
+				"mydb": {Engine: "postgres", Host: "staging.example.com", Port: 5432, User: "u", Password: "p", Database: "d", Env: "DATABASE_URL"},
+			}},
+		},
+	}
+	applied, err := cfg.ApplyProfile("staging")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied.Databases["mydb"].Host != "staging.example.com" {
+		t.Fatalf("profile databases should overlay: %+v", applied.Databases["mydb"])
+	}
+}

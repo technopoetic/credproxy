@@ -32,15 +32,33 @@ type HostConfig struct {
 }
 
 type ProfileConfig struct {
-	Hosts map[string]HostConfig `toml:"hosts"`
-	Env   map[string]string     `toml:"env"`
+	Hosts     map[string]HostConfig     `toml:"hosts"`
+	Env       map[string]string         `toml:"env"`
+	Databases map[string]DatabaseConfig `toml:"databases"`
+}
+
+// DatabaseConfig describes one real database target. credproxy fronts it with
+// a session pooler and injects a localhost-only connection string into the
+// child, so the real password never reaches the wrapped process.
+type DatabaseConfig struct {
+	Engine   string `toml:"engine"`
+	Host     string `toml:"host"`
+	Port     int    `toml:"port"`
+	User     string `toml:"user"`
+	Password string `toml:"password"`
+	Database string `toml:"database"`
+	Params   string `toml:"params"`
+	Env      string `toml:"env"`
 }
 
 type Config struct {
-	Env      map[string]string        `toml:"env"`
-	Hosts    map[string]HostConfig    `toml:"hosts"`
-	Profiles map[string]ProfileConfig `toml:"profiles"`
-	hostsSet map[string]bool
+	PgbouncerPath string                    `toml:"pgbouncer_path"`
+	ProxySQLPath  string                    `toml:"proxysql_path"`
+	Env           map[string]string         `toml:"env"`
+	Hosts         map[string]HostConfig     `toml:"hosts"`
+	Databases     map[string]DatabaseConfig `toml:"databases"`
+	Profiles      map[string]ProfileConfig  `toml:"profiles"`
+	hostsSet      map[string]bool
 }
 
 func Load(path string) (*Config, error) {
@@ -63,6 +81,9 @@ func (c *Config) SetDefaults() {
 	if c.Env == nil {
 		c.Env = make(map[string]string)
 	}
+	if c.Databases == nil {
+		c.Databases = make(map[string]DatabaseConfig)
+	}
 	if c.Profiles == nil {
 		c.Profiles = make(map[string]ProfileConfig)
 	}
@@ -72,6 +93,9 @@ func (c *Config) SetDefaults() {
 		}
 		if p.Env == nil {
 			p.Env = make(map[string]string)
+		}
+		if p.Databases == nil {
+			p.Databases = make(map[string]DatabaseConfig)
 		}
 		c.Profiles[name] = p
 	}
@@ -84,10 +108,19 @@ func (c *Config) SetDefaults() {
 
 func (c *Config) Merge(overlay *Config) *Config {
 	merged := &Config{
-		Env:      make(map[string]string, len(c.Env)+len(overlay.Env)),
-		Hosts:    make(map[string]HostConfig, len(c.Hosts)+len(overlay.Hosts)),
-		Profiles: make(map[string]ProfileConfig, len(c.Profiles)+len(overlay.Profiles)),
-		hostsSet: make(map[string]bool, len(c.Hosts)+len(overlay.Hosts)),
+		PgbouncerPath: c.PgbouncerPath,
+		ProxySQLPath:  c.ProxySQLPath,
+		Env:           make(map[string]string, len(c.Env)+len(overlay.Env)),
+		Hosts:         make(map[string]HostConfig, len(c.Hosts)+len(overlay.Hosts)),
+		Databases:     make(map[string]DatabaseConfig, len(c.Databases)+len(overlay.Databases)),
+		Profiles:      make(map[string]ProfileConfig, len(c.Profiles)+len(overlay.Profiles)),
+		hostsSet:      make(map[string]bool, len(c.Hosts)+len(overlay.Hosts)),
+	}
+	if overlay.PgbouncerPath != "" {
+		merged.PgbouncerPath = overlay.PgbouncerPath
+	}
+	if overlay.ProxySQLPath != "" {
+		merged.ProxySQLPath = overlay.ProxySQLPath
 	}
 	for k, v := range c.Env {
 		merged.Env[k] = v
@@ -102,6 +135,15 @@ func (c *Config) Merge(overlay *Config) *Config {
 	for host, hc := range overlay.Hosts {
 		merged.Hosts[host] = hc
 		merged.hostsSet[host] = true
+	}
+	// Whole-entry replacement, matching HostConfig semantics: a project entry
+	// with the same name replaces the global one rather than mixing fields
+	// from two environments.
+	for name, db := range c.Databases {
+		merged.Databases[name] = db
+	}
+	for name, db := range overlay.Databases {
+		merged.Databases[name] = db
 	}
 	for name, p := range c.Profiles {
 		merged.Profiles[name] = p
@@ -219,10 +261,13 @@ func (c *Config) ApplyProfile(name string) (*Config, error) {
 		return nil, fmt.Errorf("profile %q not found; available: %v", name, c.ProfileNames())
 	}
 	result := &Config{
-		Env:      make(map[string]string, len(c.Env)+len(profile.Env)),
-		Hosts:    make(map[string]HostConfig, len(c.Hosts)+len(profile.Hosts)),
-		Profiles: c.Profiles,
-		hostsSet: make(map[string]bool, len(c.Hosts)+len(profile.Hosts)),
+		PgbouncerPath: c.PgbouncerPath,
+		ProxySQLPath:  c.ProxySQLPath,
+		Env:           make(map[string]string, len(c.Env)+len(profile.Env)),
+		Hosts:         make(map[string]HostConfig, len(c.Hosts)+len(profile.Hosts)),
+		Databases:     make(map[string]DatabaseConfig, len(c.Databases)+len(profile.Databases)),
+		Profiles:      c.Profiles,
+		hostsSet:      make(map[string]bool, len(c.Hosts)+len(profile.Hosts)),
 	}
 	for k, v := range c.Env {
 		result.Env[k] = v
@@ -237,6 +282,12 @@ func (c *Config) ApplyProfile(name string) (*Config, error) {
 	for host, hc := range profile.Hosts {
 		result.Hosts[host] = hc
 		result.hostsSet[host] = true
+	}
+	for name, db := range c.Databases {
+		result.Databases[name] = db
+	}
+	for name, db := range profile.Databases {
+		result.Databases[name] = db
 	}
 	return result, nil
 }
