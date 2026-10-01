@@ -1,14 +1,29 @@
-# credproxy DB Credential Isolation — PRD
+# credproxy DB Credential Isolation — PRD (amended: embedded auth-split relay)
+
+> **Amendment (2026-10-01, same day as original).** The original spec fronted
+> databases with external poolers (pgbouncer for Postgres, ProxySQL for
+> MySQL, launched as host binaries). That mechanism is superseded. Why: the
+> pooler binaries are unobtainable on macOS (no brew formula, no darwin
+> artifacts upstream, no MacPorts port — all verified), source builds are
+> snowflakes, container-per-session launch was rejected as violating
+> credproxy's size/simplicity model, and the feature must be team-portable —
+> one `go install credproxy` with zero extra installs. The replacement keeps
+> every property the original was chosen for and drops the dependency on any
+> external binary or container. The original mechanism lives in git history.
 
 ## What
 
-Add local database credential isolation to credproxy's wrap mode. credproxy starts a session-scoped pooler (pgbouncer for Postgres, ProxySQL for MySQL) that authenticates the child process with a random per-session password while authenticating to the real database with the real credential, resolved from 1Password at startup. The child receives a localhost-only connection string via env var injection. The real DB password never appears in the child's environment, config files, or process arguments.
+Add database credential isolation to credproxy's wrap mode. For each configured `[databases.*]` entry, credproxy itself listens on a local port and runs an **embedded auth-split relay**: it authenticates the child process with a random per-session password, opens the backend connection with the real `op://`-resolved credential (held only in credproxy's memory), and then relays bytes transparently. The child receives a localhost-only connection string via env var injection. The real DB password never appears in the child's environment, config files, process arguments, **or anywhere on disk**.
+
+No external pooler binary. No container. No pooling or multiplexing — one backend connection per client connection.
 
 ## Why
 
-credproxy's MITM proxy keeps HTTP credentials out of agent hands, but database credentials entered in config or `.env` files are handed directly to the child. An agent that logs its env, leaks a connection string into a prompt, or exfiltrates a `.env` file leaks the real DB password. This applies IronCurtain's "agent never holds the real secret" principle (see note: DB Credential Isolation Tool) to database access by reusing poolers whose client-auth vs backend-auth decoupling is a native, first-class feature — no custom wire-protocol parsing.
+credproxy's MITM proxy keeps HTTP credentials out of agent hands, but database credentials in config or `.env` files are handed directly to the child, and any leak path (env dumps, `.env` exfiltration, logs, prompts) leaks the real password. This applies IronCurtain's "agent never holds the real secret" principle to database access.
 
-The agent's DB driver/ORM/client works completely normally: it connects to `127.0.0.1:<port>` with a password that is only valid against our own pooler. No sentinel-typing convention is needed (unlike the HTTP `CREDPROXY_TOKEN` pattern).
+The original note's "don't build a custom DB wire-protocol parser" was a judgment about **poolers** — parsing, pooling, routing, multiplexing. None of that is needed here. A relay needs only the connection handshake: authenticate the local client, open the authenticated backend, then behave like credproxy's existing CONNECT tunnel for unconfigured hosts — a byte pipe. Protocol fiddly bits are delegated to vetted pure-Go libraries (`jackc/pgx`'s pgproto3, `xdg-go/scram`, `go-mysql-org/go-mysql`) rather than hand-rolled. Query interpretation remains out of scope, exactly as before.
+
+Team portability is the binding constraint: credproxy is one Go binary; the DB isolation feature must not change that.
 
 ## How It Works
 
@@ -16,20 +31,18 @@ The agent's DB driver/ORM/client works completely normally: it connects to `127.
 $ credproxy opencode
     │
     ├─ Load global + project config, apply profile (existing)
-    ├─ Resolve op:// credentials in [env] (existing)
-    ├─ Resolve op:// passwords in [databases.*] (new)
-    ├─ Generate pooler configs in session temp dir, 0600 (new)
-    ├─ Start one pooler process per engine with databases configured (new)
-    ├─ Start MITM proxy on random port (existing)
+    ├─ Resolve op:// credentials in [env] and [databases.*] (existing)
+    ├─ For each database entry: net.Listen on 127.0.0.1:<picked port> (new)
     ├─ Inject env vars, including per-database connection URLs (new)
     ├─ Strip inherited env vars that collide with injected URLs (new)
     ├─ Exec child process
     │
     │   Agent connects to postgres://app_user:<random>@127.0.0.1:<port>/mydb
-    │       ↓ pgbouncer authenticates client (random password, SCRAM)
-    │       ↓ pgbouncer connects to real host with real password (forced user)
+    │       ↓ relay authenticates client (session password)
+    │       ↓ relay connects to real host with real password (memory-only)
+    │       ↓ bytes relayed both ways until either side closes
     │
-    └─ When child exits: kill poolers, remove temp dir, proxy shuts down
+    └─ Child exits → listeners close, goroutines gone; nothing survives
 ```
 
 ## Phase 1 Scope
@@ -39,217 +52,167 @@ $ credproxy opencode
 Explicitly OUT of scope (deferred, not forgotten):
 
 - Query-level policy (read-only enforcement, table/column allowlists, statement-type restrictions)
-- SQL parsing / AST-based inspection
+- SQL parsing / AST-based inspection — the relay never looks at post-auth traffic
 - Row caps, query timeouts, query audit logging
 - Escalation/approval workflows for writes or DDL
-- A semantic MCP-style query gateway (`db_query(sql)`) — needs a real SQL parser per engine and doesn't generalize to non-SQL stores
-- Engines without a native client/backend auth-split pooler (Mongo, Neo4j, Redis) — phase 1 fails config validation with a clear error if configured
-- Fixed pooler listen ports (same known gap as the HTTP proxy: a long-lived child can outlive the session pooler; noted in credproxy's AGENTS.md "Remaining Work")
-- Unix domain socket injection (driver-specific URL syntax breaks ORMs that only parse tcp URLs)
+- A semantic MCP-style query gateway (`db_query(sql)`)
+- Connection pooling / multiplexing (one backend connection per client connection; the word "pooler" is hereby retired)
+- Engines other than postgres and mysql
+- TLS on the local relay listener (loopback only)
 - Kernel-level egress enforcement (sandbox-exec) — tracked separately in credproxy's AGENTS.md
+- Windows support beyond what Go cross-compilation gives for free (the op/bw shim machinery is POSIX-oriented, as today)
 
 ## Config Format
 
-New `[databases.*]` section in the existing cascading config (global + project merge, profile overlay — both free via existing machinery):
+**Unchanged from the original spec.** `[databases.*]` with discrete fields (engine, host, port, user, password, database, params, env), cascading global+project merge (whole-entry replacement), profile overlay, `op://` resolution with fail-fast, validation (engine whitelist, required fields, port range, unique env names, reserved env names, unique mysql usernames, no whitespace in postgres-interpolated fields — all already implemented).
 
-```toml
-[databases.mydb]
-engine = "postgres"                          # "postgres" | "mysql"
-host = "db.example.com"                      # real target host
-port = 5432                                  # real target port
-user = "app_user"                            # real username
-password = "op://Private/mydb/password"      # op:// URI or literal
-database = "appdb"                           # real database name
-params = "sslmode=require"                   # optional, engine-interpreted
-env = "DATABASE_URL"                         # env var name injected into child
-```
+`params` is engine-interpreted backend connection tuning:
 
-### Why discrete fields, not a URL
-
-Parsing `postgres://user:op://Private/x/y@host/db` is ambiguous — the `op://` path contains slashes that collide with URL structure. Discrete fields are unambiguous, merge per-field, and credproxy constructs both the pooler config and the injected URL itself, so no URL parsing of secrets ever ships.
-
-### Field semantics
-
-| Field | Required | Notes |
-|------|----------|-------|
-| `engine` | yes | `postgres` or `mysql`; anything else fails config validation |
-| `host` | yes | Real database host |
-| `port` | yes | Real database port |
-| `user` | yes | Real username; also used as the pooler client username (least surprise for ORMs) |
-| `password` | yes | Real password; `op://` URIs resolved at startup via the existing provider registry |
-| `database` | yes | Real database name |
-| `params` | no | Engine-interpreted passthrough: pgbouncer gets it verbatim in the `[databases]` line (`sslmode=require`); ProxySQL maps supported values (`use_ssl=1` → `use_ssl`) |
-| `env` | yes | Name of the env var injected into the child. Entries must have unique `env` names |
+| Engine | Param | Values | Default |
+|---|---|---|---|
+| postgres | `sslmode` | `disable`, `prefer`, `require`, `verify-full` | `prefer` (attempt TLS, allow fallback) |
+| mysql | `use_ssl` | `0`, `1` | `0` |
 
 ### Injected URL shape
 
 ```
-DATABASE_URL=postgres://app_user:<random-session-password>@127.0.0.1:<port>/mydb
+DATABASE_URL=postgres://app_user:<random-session-password>@127.0.0.1:<port>/mydb?sslmode=disable
 DATABASE_URL=mysql://app_user:<random-session-password>@127.0.0.1:<port>/mydb
 ```
 
-- `<random-session-password>`: 32 bytes from crypto/rand, base64 (URL-safe), generated per credproxy session. Not the literal `CREDPROXY_TOKEN` sentinel — an agent that knows credproxy's conventions could guess the sentinel; it cannot guess a random per-session value.
-- `mydb` is the config entry name, used as the pooler-side database alias. Two entries pointing at real databases with colliding names don't conflict. When entry name equals the real database name (the common case), this is invisible.
-- Client username is the real username. Client password is the random per-session value.
+- `<random-session-password>`: 32 bytes from crypto/rand, base64url, generated per session — not the guessable `CREDPROXY_TOKEN` sentinel.
+- The config entry name is the alias used as the database name in the URL (two entries with colliding real database names don't conflict).
+- `sslmode=disable` on postgres URLs because the loopback leg does no TLS by design; backend-leg TLS is governed by `params`, a different leg.
 
 ## Credential Split Mechanics
 
-### Postgres — pgbouncer
+The relay is a server toward the child and a client toward the real database. After authentication completes on both legs, it is a transparent byte pipe — prepared statements, extended query protocols, and driver quirks work by construction because nothing is interpreted.
 
-Generated `pgbouncer.ini` (in session temp dir, 0600):
+### Postgres
 
-```ini
-[databases]
-mydb = host=db.example.com port=5432 dbname=appdb user=app_user password=<REAL> sslmode=require
+- **Frontend (child → relay):** handle the `SSLRequest` probe (`'N'` — no SSL on loopback), read the `StartupMessage`, respond `AuthenticationCleartextPassword`, verify the session password, send `AuthenticationOk`, relay. Cleartext-password auth is supported by every Postgres client library; on loopback it exposes only the worthless session password.
+- **Backend (relay → real server):** open a real connection with the real username; negotiate whatever the server's pg_hba demands:
+  - `SCRAM-SHA-256` (default for modern servers) via `xdg-go/scram` client
+  - `md5` (legacy, trivial salted-MD5)
+  - cleartext password — only ever sent when the backend leg is TLS (`sslmode` in `params` demands it)
+- The server chooses the method; the relay must speak all three.
 
-[pgbouncer]
-listen_addr = 127.0.0.1
-listen_port = <picked>
-auth_type = scram-sha-256
-auth_file = <tempdir>/userlist.txt
-pool_mode = session
-unix_socket_dir = <tempdir>
-pidfile = <tempdir>/pgbouncer.pid
-; admin_users intentionally unset — the "pgbouncer" admin console is unreachable
-```
+### MySQL
 
-`userlist.txt` (0600): `"app_user" "<random-session-password>"` (plaintext — pgbouncer derives the SCRAM exchange from it).
-
-Split: client auth comes from `auth_file` (random password); backend auth is forced by the `[databases]` line's `user=`/`password=` (real credential). Per pgbouncer docs: "When the user is part of the connection string, the connection between PgBouncer and PostgreSQL is forced to the given user, whatever the client user." The real password never appears in any client-visible surface.
-
-Known upstream issue pgbouncer#1461 (SCRAM + forced user) only bites when `use_scram_keys = true`, which we never set. The implementation spike verifies forced-user SCRAM end-to-end against a real server regardless; documented fallback if a backend SCRAM incompatibility appears: `auth_type = plain` client auth (loopback-only exposure).
-
-### MySQL — ProxySQL
-
-ProxySQL is configured via its admin interface (SQLite-backed) rather than a static file describing users. Startup sequence: write a minimal `proxysql.cnf` (randomized admin credentials, admin interface bound to 127.0.0.1 on a picked port, SQL frontend bound to 127.0.0.1 on a picked port, one hostgroup containing the real server, disk DB in the session temp dir), start `proxysql --initial -f -c <tempdir>/proxysql.cnf` (foreground), then feed it the split-credential user config through the admin interface.
-
-`mysql_users` rows per database — frontend and backend decoupled (documented ProxySQL capability: "A user can have both flags set to 1, or they can be decoupled for advanced security architectures"):
-
-- Frontend row: `username=app_user`, `password=<random>`, `frontend=1`, `backend=0`, `default_hostgroup=0`
-- Backend row: `username=app_user`, `password=<REAL>`, `frontend=0`, `backend=1`
-
-The exact dual-row mechanics (vs. the newer `attributes` overlay) are pinned in the implementation spike against the ProxySQL version we test with; the tested version is documented.
+- **Frontend (child → relay):** serve the Initial Handshake Packet offering `mysql_native_password` (the relay implements the SHA-1 challenge-response itself in Go — it needs no server-side plugin support, so MySQL 8.4/9.0 dropping the plugin server-side is irrelevant), verify the session-password token, send OK, relay. The relay chooses the plugin; clients universally support this one.
+- **Backend (relay → real server):** client handshake with the real credentials:
+  - `mysql_native_password`: SHA-1 challenge-response (safe over cleartext — the token is nonce-bound and non-reversible)
+  - `caching_sha2_password` fast-auth path: SHA-256 token, also nonce-bound and non-reversible over cleartext
+  - `caching_sha2_password` full-auth: the password would otherwise cross the wire in cleartext — so it is sent **RSA-OAEP-encrypted** with the server's public key over a cleartext channel, or in cleartext only when backend TLS is on (`use_ssl=1`)
+- `go-mysql-org/go-mysql`'s server and client packages provide the handshake framing; anything they lack (notably full-auth RSA if absent upstream) is bounded, documented protocol work pinned by the spike.
 
 ### Auth flow summary
 
-| | Client → pooler | Pooler → real DB |
+| | Client → relay | Relay → real DB |
 |---|---|---|
 | Username | real username | real username |
 | Password | random per-session | real, from `op://` or literal |
-| Visible to child | yes (this pair only) | never |
+| Visible to child | yes (this pair only) | never — memory-only inside credproxy |
 
 ## Security Model Impact
 
 What this stops (the realistic leak paths):
 
-- Real password in child env, `.env` files, dotenv dumps, `printenv`, error messages, prompts — the child only ever holds a localhost-only pair
-- Credential replay outside the machine — the random password is worthless off-box and dies with the session
-- Cross-session credential reuse — every session gets fresh random client credentials
+- Real password in child env, `.env` files, dotenv dumps, `printenv`, error messages, prompts
+- Credential replay off-box or after the session — the random password is worthless off-box and dies with the session
+- Cross-session credential reuse — fresh random client credentials every session
+- **Real password on disk — impossible by construction.** The original spec's documented gap (real password in 0600 temp files readable by a same-user process) no longer exists: the real password lives only in credproxy's process memory, same as the HTTP MITM side. Reading it requires debugger-grade privileges (`task_for_pid` entitlements on macOS), a materially stronger boundary than a filesystem.
 
-The honest gap (documented, not hidden): the real password exists in the pooler's config — `0600` files in a session temp dir (`os.MkdirTemp`, `0700`), deleted on session exit. A same-user process that deliberately goes filesystem-hunting can read it. This is weaker than the HTTP side, where the real secret exists only in credproxy's memory. Phase 1 accepts this because it kills the common accidental-leak paths; stronger options (backend `auth_query` so the pooler fetches the password at connect time, config truncation after startup) are phase 2.
+The random client password is visible to the child (necessarily — it must connect). It grants access only through the relay, which is exactly the intended isolation boundary.
 
-Related exposure: the random client password is visible to the child (necessarily — it must connect). It grants access only through the pooler, which is exactly the intended isolation boundary.
+Trust boundary note, stated honestly: the handshake code is now credproxy's, not pgbouncer's decade of patching. Bugs in it become our bugs. Mitigations: protocol framing comes from vetted libraries, post-auth traffic is never interpreted (the blast radius of a relay bug is a broken connection, not a wrong query), and the docker live tests pin real-server behavior for both engines.
 
-### Env hygiene (critical detail)
+### Env hygiene (unchanged, already implemented)
 
-credproxy already filters inherited env before spawning the child. It additionally:
+- Strips inherited env vars whose names match a configured database's `env` name — a real `DATABASE_URL` in the parent shell must not silently defeat the scheme
+- Strips `PGPASSWORD` when any postgres database is configured, `MYSQL_PWD` when any mysql database is configured
+- Pooler-injected URLs override `[env]` config values on name collision (last-wins)
 
-- Strips any inherited env var whose name matches a configured database's `env` name — a real `DATABASE_URL` in the parent shell must not silently defeat the scheme
-- Strips `PGPASSWORD` when any postgres database is configured, `MYSQL_PWD` when any mysql database is configured (the engines' standard CLI password vars)
+## Relay Lifecycle
 
-Pooler-injected URLs override `[env]` config values on name collision. Documented: don't put DB URLs in `[env]` when using `[databases.*]`.
-
-## Pooler Lifecycle
-
-- Binary discovery: `exec.LookPath("pgbouncer" / "proxysql")`, overridable per engine via config (`pgbouncer_path`, `proxysql_path`). A missing binary for an engine that has configured databases → fail-fast at startup with an actionable message; engines with no configured databases are never checked. Silently running without isolation would be worse than not starting (same philosophy as `op://` resolution failure).
-- One pooler process per engine per session (a single pgbouncer serves all postgres entries via aliases; same for ProxySQL). No databases configured → pooler machinery never runs, zero behavior change.
-- Pooler stderr piped to credproxy's log file.
-- Ports: pre-picked free ports (bind `:0`, close, reuse — small race window, acceptable for local dev; ProxySQL has no port-0 support). One rebind retry on collision.
-- Crash after startup: surfaced in credproxy's log, session continues — the child's DB calls fail visibly (same philosophy as the MITM proxy dying).
-- Signals: existing SIGINT/SIGTERM forwarding extended — child gets the signal (existing behavior), poolers are terminated, temp dir removed. Normal child exit: kill poolers, remove temp dir, exit with child's code.
+- One listener per database entry, `net.Listen("tcp", "127.0.0.1:0")`, **kept open** — the bind-close-reuse port race from the original spec disappears because credproxy owns the socket.
+- No child processes, no temp dir, no binary discovery, no SIGTERM escalation. Listeners and per-connection goroutines are owned by the session and die when it does; `runWrap`'s existing exit-code plumbing (returns the child's code; `main` exits after defers) covers cleanup.
+- Per client connection: authenticate → dial backend → start two copy goroutines → on either EOF/error, close both.
+- Backend dial failure: the client connection is closed with the engine's natural error; the session continues (same philosophy as the MITM proxy dying mid-session — visible failure, not silent).
+- Fail-fast validation at startup (config validation, `op://` resolution) is unchanged.
 
 ## Implementation Plan
 
-### 1. Config (`internal/config/config.go`)
+### 1. New packages
 
-```go
-type DatabaseConfig struct {
-    Engine   string `toml:"engine"`
-    Host     string `toml:"host"`
-    Port     int    `toml:"port"`
-    User     string `toml:"user"`
-    Password string `toml:"password"`
-    Database string `toml:"database"`
-    Params   string `toml:"params"`
-    Env      string `toml:"env"`
-}
+- `internal/dbproxy/pg` — Postgres listener: SSLRequest/startup handshake, cleartext-password client auth, backend dial with md5/SCRAM/cleartext+TLS negotiation, byte relay
+- `internal/dbproxy/mysql` — MySQL listener: Initial Handshake serving `mysql_native_password`, session-password verification, backend dial with native/caching_sha2 token paths and full-auth RSA, byte relay
 
-type Config struct {
-    // existing fields...
-    Databases map[string]DatabaseConfig `toml:"databases"`
-}
-```
+### 2. Manager rework (`internal/pooler` → slimmed)
 
-- `[databases.*]` participates in global+project merge (project wins per field) and profile overlay (`[profiles.<name>.databases]`)
-- Validation: engine ∈ {postgres, mysql}, unique `env` names, required fields present
-- Password resolution: extend the startup resolution phase to resolve `op://` values in `Databases[*].Password` (same resolver, same 30s per-call timeout, fail-fast on error)
+- Keeps: grouping by engine, env computation (`buildURL`), strip list, `Start`/`Stop`/idempotence, session password generation
+- Drops: binary discovery (`lookPath`), temp dir, `proc`/process supervision, `waitForListen` (listeners are ours), per-engine binary launch
+- Failure mode shifts: no "binary missing" startup error; startup failures are listen errors (address in use) — still fail-fast
 
-### 2. Pooler package (`internal/pooler/`)
+### 3. Config
 
-- `manager.go` — lifecycle owner: temp dir, per-engine process start/stop, env var computation for injection, signal/cleanup wiring
-- `pgbouncer.go` — pgbouncer config generation + launch
-- `proxysql.go` — ProxySQL config generation, launch, admin-interface provisioning
-- Engine interface kept narrow (Generate, Start, Stop) but no premature abstraction beyond the two engines
+- No new fields; `params` semantics pinned per the table above (validation for these values lands with the relay packages)
 
-### 3. Wrap mode integration (`cmd/credproxy/main.go`)
+### 4. Dependencies (all pure Go)
 
-- After config resolution, before child exec: `pooler.Manager` starts engines, computes injected vars
-- `buildChildEnv` extended: strip colliding inherited vars, add injected URLs
-- Signal handling and shutdown extended to stop poolers and remove the temp dir
+- `github.com/jackc/pgx/v5` (for `pgproto3`) — the canonical Go Postgres driver's wire-protocol package
+- `github.com/xdg-go/scram` — SCRAM-SHA-256 client
+- `github.com/go-mysql-org/go-mysql` — MySQL server/client handshake framing
+- `github.com/lib/pq`, `github.com/go-sql-driver/mysql` — live-test clients only (already present)
+- Removed: none required (go-sql-driver's admin-provisioning use disappears with ProxySQL, but it remains as the live-test mysql client)
+
+### 5. Wrap mode integration (`cmd/credproxy/main.go`)
+
+- Unchanged from the already-merged implementation except that the manager now starts relays instead of processes; env stripping and URL injection untouched
 
 ## Testing
 
-- **Unit (no Docker):** config parse/merge/profile with `[databases.*]`; validation errors; pgbouncer.ini / userlist.txt / proxysql.cnf generation (assert content, no real secrets in client-visible sections); URL construction; env stripping logic
-- **Spike (first implementation step, throwaway scripts):** against Dockerized Postgres + MySQL — verify pgbouncer forced-user SCRAM split and ProxySQL frontend/backend dual-row split end-to-end before building around them; record ProxySQL version and exact working row config
-- **Live (documented manual procedure):** `docker run postgres` / `docker run mysql`; wrap a small Go client or `psql`/`mysql` CLI under credproxy; assert connection succeeds, child env contains only the localhost URL with the random password, and the real password appears nowhere in child env or `ps` output
+- **Unit:** handshake message round-trips per engine (encode/decode via pgproto3 and go-mysql types), session-password verification vectors (SHA-1 native token, SCRAM exchange against a test verifier, caching_sha2 fast-auth token), auth-method negotiation branches, relay loops over `net.Pipe` with fake backends, env hygiene and URL construction (existing tests carry over)
+- **Spike (first implementation step, throwaway):** drive both relay packages end-to-end against Dockerized Postgres 16 + MySQL 8 before wiring into the manager — pin the caching_sha2 full-auth path (library coverage vs hand-rolled RSA), the SSLRequest dance, and driver compatibility for lib/pq and go-sql-driver
+- **Live (docker targets, existing harness):** `go test -tags live` — wrap real queries through the relay to real containers; assert the real password is absent from the injected URL **and that no `credproxy-*` temp files are created at all**; the pgbouncer source-build section of `docs/live-testing-db-poolers.md` is deleted — no binaries exist in this design
 
 ## Acceptance Criteria
 
-- `credproxy <cmd>` with a configured postgres database: child's `DATABASE_URL` points at `127.0.0.1:<port>` with the random password; connections work; real password absent from child env
-- Same for mysql via ProxySQL
+- `credproxy <cmd>` with a configured postgres database: child's `DATABASE_URL` points at `127.0.0.1:<port>` with the random password; connections work (including parameterized/prepared-statement queries); real password absent from child env **and from the filesystem**
+- Same for mysql, including against `caching_sha2_password` (MySQL 8 default) and `mysql_native_password` users
 - No `[databases.*]` in config → behavior identical to today
-- Missing pgbouncer/proxysql binary → startup fails with actionable error
 - Inherited `DATABASE_URL` stripped when a database with `env="DATABASE_URL"` is configured; `PGPASSWORD`/`MYSQL_PWD` stripped per engine
 - Two entries with colliding real database names work (aliasing)
 - `op://` password resolution failure → startup fails fast
-- Poolers terminate and temp dir removed on child exit and on SIGINT/SIGTERM
-- Real password absent from client-visible pooler surfaces (injected URLs, userlist.txt)
+- Listeners close and goroutines stop on child exit and on SIGINT/SIGTERM
+- Real password never written to disk, never logged, never present in child env
+- **Zero new install requirements**: no pooler binaries, no containers, no config beyond `[databases.*]`
 
 ## Non-Goals
 
 - Query-level policy, SQL parsing, audit logging, rate/timeout limits, approval workflows
 - MCP-style semantic query gateway
-- Mongo / Neo4j / Redis / other non-auth-split engines
-- Fixed listen ports or persistent (daemon) poolers
-- TLS on the pooler listener (loopback only)
-- Windows support (pooler binaries and process handling are POSIX-oriented, matching credproxy today)
+- Connection pooling / multiplexing (explicitly: one backend connection per client connection)
+- Engines beyond postgres and mysql
+- TLS on the relay's loopback listener
+- Fixed ports or persistent listeners across sessions
 
 ## Risks
 
 | Risk | Likelihood | Impact | Mitigation |
 |------|-----------|--------|------------|
-| pgbouncer forced-user SCRAM edge cases (#1461) | Low | High — postgres support broken | Spike first; `use_scram_keys` never set; documented `plain` fallback (loopback-only) |
-| ProxySQL dual-row semantics vary by version | Medium | High — mysql support broken | Spike pins tested version; document exact working config |
-| Port collision race (bind-close-reuse) | Low | Low — one retry, then fail | Retry once; fail with clear message |
-| Real password readable in temp dir by same-user processes | Certain | Medium — accidental-leak paths closed, targeted inspection not | Documented gap; phase 2 auth_query |
-| Long-lived child outlives session pooler | Low | Medium — dead URL in long-running service | Same known gap as HTTP proxy; future fixed-port work |
-| Parent-shell `DATABASE_URL` silently defeats scheme | Medium if unhandled | High | Strip matching inherited vars; acceptance criterion |
-| User puts real DB URL in `[env]` instead of `[databases.*]` | Medium | High — real credential in child env | Pooler vars win on collision; docs; README guidance |
+| Handshake edge cases are our bugs now (driver quirks, auth-method corners) | Medium | Medium — connection failures, visible not silent | Vetted protocol libraries for framing; relay never interprets post-auth bytes; docker live tests pin real drivers (lib/pq, go-sql-driver) and servers (PG 16, MySQL 8) |
+| caching_sha2 full-auth RSA path missing in go-mysql client | Medium | Medium — blocked against MySQL 8 default users | Spike pins it first; RSA-OAEP exchange is bounded, documented protocol work if hand-rolling is needed |
+| pg SCRAM backend verifier edge cases (server-side channel binding demands) | Low | Medium — blocked against modern PG | xdg-go/scram is the same library family MongoDB drivers use; live test against PG 16 default pg_hba |
+| Dependency weight (pgx, go-mysql) grows the binary | Certain | Low — a few MB | Pure Go, no cgo; credproxy remains a single static binary |
+| Driver requests SSL on the loopback leg | Medium | Low — connection refused with clear error, not a leak | `sslmode=disable` injected in postgres URLs; SSLRequest answered `'N'`; documented |
+| Parent-shell `DATABASE_URL` silently defeats scheme | Medium if unhandled | High | Already handled: strip matching inherited vars (implemented, tested) |
+| User puts real DB URL in `[env]` instead of `[databases.*]` | Medium | High | Pooler vars win on collision; docs; README guidance (already merged) |
 
 ## Out of Scope (Future)
 
-- `auth_query` backend credential fetch (removes the temp-file gap)
-- Pooler config truncation after startup
-- Fixed listen ports for long-lived children
-- Additional engines (via auth-split-capable poolers only)
+- Connection pooling / multiplexing
+- TLS on the relay listener
+- Additional engines
 - Query policy / audit (phase 2+)
+- Pooler-in-container mode (rejected — violates size/simplicity and team portability)
