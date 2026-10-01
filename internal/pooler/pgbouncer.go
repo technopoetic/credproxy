@@ -2,6 +2,10 @@ package pooler
 
 import (
 	"fmt"
+	"io"
+	"log/slog"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -69,4 +73,37 @@ func pgbouncerUserlist(dbs map[string]config.DatabaseConfig, password string) st
 		fmt.Fprintf(&b, "%q %q\n", u, password)
 	}
 	return b.String()
+}
+
+// startPgbouncer writes the ini and userlist into dir and launches the
+// binary in the foreground, logging to credproxy's log file. Client auth is
+// the session password via auth_file; backend auth is forced by the
+// [databases] lines (real credential). Verified by spike against Postgres 16
+// with SCRAM on both legs.
+func startPgbouncer(logger *slog.Logger, logFile io.Writer, binPath, dir, password string, dbs map[string]config.DatabaseConfig) (*proc, error) {
+	port, err := pickPort()
+	if err != nil {
+		return nil, fmt.Errorf("picking pgbouncer port: %w", err)
+	}
+	iniPath := filepath.Join(dir, "pgbouncer.ini")
+	if err := os.WriteFile(iniPath, []byte(pgbouncerConfig(dir, port, dbs)), 0600); err != nil {
+		return nil, fmt.Errorf("writing pgbouncer.ini: %w", err)
+	}
+	userlistPath := filepath.Join(dir, "userlist.txt")
+	if err := os.WriteFile(userlistPath, []byte(pgbouncerUserlist(dbs, password)), 0600); err != nil {
+		return nil, fmt.Errorf("writing userlist.txt: %w", err)
+	}
+
+	cmd := exec.Command(binPath, iniPath)
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	p, err := startProc("pgbouncer", cmd, []int{port}, port, logger)
+	if err != nil {
+		return nil, fmt.Errorf("starting pgbouncer: %w", err)
+	}
+	if err := waitForListen(p, startupTimeout); err != nil {
+		p.stop()
+		return nil, err
+	}
+	return p, nil
 }

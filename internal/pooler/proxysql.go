@@ -1,8 +1,18 @@
 package pooler
 
 import (
+	"context"
+	"database/sql"
 	"fmt"
+	"io"
+	"log/slog"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
+	"time"
+
+	_ "github.com/go-sql-driver/mysql" // registers the "mysql" driver for admin provisioning
 
 	"github.com/technopoetic/credproxy/internal/config"
 )
@@ -76,4 +86,67 @@ func proxysqlUseSSL(params string) int {
 
 func sqlEscape(s string) string {
 	return strings.ReplaceAll(s, "'", "''")
+}
+
+// startProxySQL writes a secret-free cnf, launches with --initial (fresh
+// runtime DB from the file), waits for both interfaces, then provisions the
+// user rows through the admin interface — the real password enters ProxySQL's
+// runtime memory via SQL and never lands in the static config file. Shapes
+// and the dual-row split follow the spike findings (ProxySQL 3.0.11).
+func startProxySQL(ctx context.Context, logger *slog.Logger, logFile io.Writer, binPath, dir, password string, dbs map[string]config.DatabaseConfig) (*proc, error) {
+	adminPort, err := pickPort()
+	if err != nil {
+		return nil, fmt.Errorf("picking proxysql admin port: %w", err)
+	}
+	sqlPort, err := pickPort()
+	if err != nil {
+		return nil, fmt.Errorf("picking proxysql sql port: %w", err)
+	}
+	adminPassword, err := sessionPassword()
+	if err != nil {
+		return nil, fmt.Errorf("generating proxysql admin password: %w", err)
+	}
+
+	cnfPath := filepath.Join(dir, "proxysql.cnf")
+	if err := os.WriteFile(cnfPath, []byte(proxysqlConfig(dir, adminPort, sqlPort, adminPassword, dbs)), 0600); err != nil {
+		return nil, fmt.Errorf("writing proxysql.cnf: %w", err)
+	}
+
+	cmd := exec.Command(binPath, "--initial", "-f", "-c", cnfPath)
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	p, err := startProc("proxysql", cmd, []int{adminPort, sqlPort}, sqlPort, logger)
+	if err != nil {
+		return nil, fmt.Errorf("starting proxysql: %w", err)
+	}
+	if err := waitForListen(p, startupTimeout); err != nil {
+		p.stop()
+		return nil, err
+	}
+	if err := provisionProxySQLUsers(ctx, adminPort, adminPassword, dbs, password, logger); err != nil {
+		p.stop()
+		return nil, fmt.Errorf("provisioning proxysql users: %w", err)
+	}
+	return p, nil
+}
+
+// provisionProxySQLUsers runs the generated SQL through the admin interface.
+// Statements carry real passwords, so they are never logged individually —
+// only the success count is.
+func provisionProxySQLUsers(ctx context.Context, adminPort int, adminPassword string, dbs map[string]config.DatabaseConfig, password string, logger *slog.Logger) error {
+	dsn := fmt.Sprintf("admin:%s@tcp(127.0.0.1:%d)/", adminPassword, adminPort)
+	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		return fmt.Errorf("opening proxysql admin connection: %w", err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	for _, q := range proxysqlUserSQL(sortedNames(dbs), dbs, password) {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			return fmt.Errorf("proxysql admin statement failed: %w", err)
+		}
+	}
+	logger.Info("proxysql users provisioned", "count", len(dbs))
+	return nil
 }
