@@ -21,3 +21,4 @@ ca-key.pem
 
 # CodeGraph index
 .codegraph/
+tags
