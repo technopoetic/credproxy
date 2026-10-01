@@ -145,3 +145,28 @@ func TestProxySQLUseSSL(t *testing.T) {
 		t.Fatal("empty params must map to 0")
 	}
 }
+
+func TestBuildURLPostgresDisablesTLS(t *testing.T) {
+	// The pooler listens on loopback only, and TLS on that leg is a spec
+	// non-goal — but lib/pq defaults to sslmode=require, so the injected
+	// URL must say otherwise or every lib/pq client fails with
+	// "SSL is not enabled on the server".
+	u := buildURL("postgres", "app_user", "pw", 6432, "mydb")
+	if !strings.Contains(u, "sslmode=disable") {
+		t.Fatalf("postgres URL must carry sslmode=disable (loopback, TLS non-goal): %s", u)
+	}
+	mu := buildURL("mysql", "app_user", "pw", 3307, "mdb")
+	if strings.Contains(mu, "sslmode") {
+		t.Fatalf("mysql URL must not carry sslmode: %s", mu)
+	}
+}
+
+func TestPgbouncerConfigIgnoresExtraFloatDigits(t *testing.T) {
+	// lib/pq sends extra_float_digits in its startup packet; pgbouncer
+	// rejects unknown startup parameters (hit live in Task 10). Clients
+	// shouldn't fail because of a display-precision hint.
+	ini := pgbouncerConfig("/tmp/sess", 6432, testDBs())
+	if !strings.Contains(ini, "ignore_startup_parameters = extra_float_digits") {
+		t.Fatalf("ignore_startup_parameters missing: %s", ini)
+	}
+}

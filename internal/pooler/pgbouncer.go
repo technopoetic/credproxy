@@ -49,6 +49,7 @@ listen_port = %d
 auth_type = scram-sha-256
 auth_file = %s
 pool_mode = session
+ignore_startup_parameters = extra_float_digits
 unix_socket_dir = %s
 pidfile = %s
 ; admin_users intentionally unset — the pgbouncer admin console is unreachable

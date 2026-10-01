@@ -194,7 +194,7 @@ func TestComputeEnvURLsAndStrip(t *testing.T) {
 		"mydb": {Engine: "postgres", Host: "h", Port: 5432, User: "app_user", Password: "REAL", Database: "d", Env: "DATABASE_URL"},
 	}
 	m.computeEnv("postgres", "sesspw", dbs)
-	want := "postgres://app_user:sesspw@127.0.0.1:6432/mydb"
+	want := "postgres://app_user:sesspw@127.0.0.1:6432/mydb?sslmode=disable"
 	if m.Env["DATABASE_URL"] != want {
 		t.Fatalf("env URL wrong: %s", m.Env["DATABASE_URL"])
 	}

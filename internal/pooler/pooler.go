@@ -43,6 +43,16 @@ func buildURL(engine, user, password string, port int, alias string) string {
 		Host:   net.JoinHostPort("127.0.0.1", strconv.Itoa(port)),
 		Path:   "/" + alias,
 	}
+	if engine == "postgres" {
+		// The pooler listens on loopback only and TLS on that leg is a
+		// non-goal; lib/pq defaults to sslmode=require and would refuse to
+		// connect without this. Backend-leg TLS still applies via the
+		// database entry's params (e.g. sslmode=require) — that's a
+		// different leg.
+		q := u.Query()
+		q.Set("sslmode", "disable")
+		u.RawQuery = q.Encode()
+	}
 	return u.String()
 }
 
