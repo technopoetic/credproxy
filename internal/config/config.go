@@ -148,11 +148,12 @@ func (c *Config) Merge(overlay *Config) *Config {
 	for name, p := range c.Profiles {
 		merged.Profiles[name] = p
 	}
-	for name, p := range overlay.Profiles {
+		for name, p := range overlay.Profiles {
 		if existing, ok := merged.Profiles[name]; ok {
 			ep := ProfileConfig{
-				Hosts: make(map[string]HostConfig, len(existing.Hosts)+len(p.Hosts)),
-				Env:   make(map[string]string, len(existing.Env)+len(p.Env)),
+				Hosts:     make(map[string]HostConfig, len(existing.Hosts)+len(p.Hosts)),
+				Env:       make(map[string]string, len(existing.Env)+len(p.Env)),
+				Databases: make(map[string]DatabaseConfig, len(existing.Databases)+len(p.Databases)),
 			}
 			for k, v := range existing.Env {
 				ep.Env[k] = v
@@ -165,6 +166,12 @@ func (c *Config) Merge(overlay *Config) *Config {
 			}
 			for h, hc := range p.Hosts {
 				ep.Hosts[h] = hc
+			}
+			for name, db := range existing.Databases {
+				ep.Databases[name] = db
+			}
+			for name, db := range p.Databases {
+				ep.Databases[name] = db
 			}
 			merged.Profiles[name] = ep
 		} else {
@@ -331,11 +338,16 @@ var reservedEnvNames = map[string]bool{
 }
 
 // ValidateDatabases checks every [databases.*] entry: known engine, required
-// fields present, port in range, unique env var names, and no reserved env
-// var names. All problems are reported in one joined error.
+// fields present, port in range, unique env var names, no reserved env var
+// names, unique mysql usernames (ProxySQL routes per username, so two mysql
+// entries sharing one cannot both work), and no whitespace in the fields
+// pgbouncer interpolates into its space-separated [databases] line (an
+// op://-resolved password with a space would split that line). All problems
+// are reported in one joined error.
 func (c *Config) ValidateDatabases() error {
 	var errs []error
 	seenEnv := make(map[string]string, len(c.Databases))
+	seenMySQLUser := make(map[string]string, len(c.Databases))
 	for name, db := range c.Databases {
 		if db.Engine != "postgres" && db.Engine != "mysql" {
 			errs = append(errs, fmt.Errorf("database %q: engine must be \"postgres\" or \"mysql\", got %q", name, db.Engine))
@@ -361,6 +373,25 @@ func (c *Config) ValidateDatabases() error {
 			errs = append(errs, fmt.Errorf("database %q: env var %q already used by database %q", name, db.Env, prev))
 		}
 		seenEnv[db.Env] = name
+		if db.Engine == "mysql" {
+			if prev, ok := seenMySQLUser[db.User]; ok {
+				errs = append(errs, fmt.Errorf("database %q: mysql username %q already used by database %q — ProxySQL routes per username and cannot serve two mysql entries with the same one", name, db.User, prev))
+			}
+			seenMySQLUser[db.User] = name
+		}
+		// pgbouncer interpolates these into a space-separated [databases]
+		// line; whitespace or control characters would corrupt the config.
+		// ProxySQL passwords are SQL literals and tolerate spaces, so the
+		// password check applies to postgres entries only.
+		whitespaceFields := map[string]string{"host": db.Host, "user": db.User, "database": db.Database}
+		if db.Engine == "postgres" {
+			whitespaceFields["password"] = db.Password
+		}
+		for field, val := range whitespaceFields {
+			if strings.ContainsFunc(val, func(r rune) bool { return r <= ' ' || r == 0x7f }) {
+				errs = append(errs, fmt.Errorf("database %q: %s must not contain whitespace or control characters", name, field))
+			}
+		}
 	}
 	return errors.Join(errs...)
 }

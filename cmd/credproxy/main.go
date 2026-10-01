@@ -94,7 +94,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	runWrap(cfg, caProvider, res, logger, logFile, args)
+	// runWrap returns the child's exit code rather than exiting itself: the
+	// poolers and shim dir are cleaned up by its defers, and os.Exit would
+	// skip them — leaking the 0600 temp dir with the real password on every
+	// non-zero child exit.
+	os.Exit(runWrap(cfg, caProvider, res, logger, logFile, args))
 }
 
 func loadMergedConfig(globalPath string, profileName string) (*config.Config, error) {
@@ -136,14 +140,14 @@ func loadMergedConfig(globalPath string, profileName string) (*config.Config, er
 	return merged.ApplyProfile(profileName)
 }
 
-func runWrap(cfg *config.Config, caProvider *ca.Provider, res *resolver.Resolver, logger *slog.Logger, logFile *os.File, command []string) {
+func runWrap(cfg *config.Config, caProvider *ca.Provider, res *resolver.Resolver, logger *slog.Logger, logFile *os.File, command []string) int {
 	addr := ":0"
 	srv := mitm.New(addr, caProvider, res, logger)
 
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to start proxy: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	defer ln.Close()
 
@@ -154,7 +158,7 @@ func runWrap(cfg *config.Config, caProvider *ca.Provider, res *resolver.Resolver
 	mgr := pooler.NewManager(cfg, logger, logFile)
 	if err := mgr.Start(context.Background()); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to start database poolers: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	defer mgr.Stop()
 
@@ -165,14 +169,14 @@ func runWrap(cfg *config.Config, caProvider *ca.Provider, res *resolver.Resolver
 	caCertPath, err := caProvider.WriteTrustBundle(config.DefaultCADir())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to write CA trust bundle: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	childEnv := buildChildEnv(cfg, portStr, childPath, caCertPath, shimDir, mgr.Env, mgr.Strip)
 
 	childBin, err := exec.LookPath(command[0])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "command not found: %s\n", command[0])
-		os.Exit(1)
+		return 1
 	}
 
 	child := exec.Command(childBin, command[1:]...)
@@ -183,7 +187,7 @@ func runWrap(cfg *config.Config, caProvider *ca.Provider, res *resolver.Resolver
 
 	if err := child.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "exec failed: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 
 	go func() {
@@ -196,11 +200,12 @@ func runWrap(cfg *config.Config, caProvider *ca.Provider, res *resolver.Resolver
 
 	if err := child.Wait(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
-			os.Exit(exitErr.ExitCode())
+			return exitErr.ExitCode()
 		}
 		fmt.Fprintf(os.Stderr, "exec failed: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
 
 func buildChildEnv(cfg *config.Config, proxyPort string, childPath string, caCertPath string, shimDir string, poolerEnv map[string]string, poolerStrip []string) []string {

@@ -896,3 +896,61 @@ func TestResolveDatabasePasswordsResolvesAndFailsFast(t *testing.T) {
 		t.Fatal("expected fail-fast on resolution error")
 	}
 }
+
+func TestMergeProfilesMergeDatabases(t *testing.T) {
+	global := &Config{Env: map[string]string{}, Hosts: map[string]HostConfig{}, Databases: map[string]DatabaseConfig{},
+		Profiles: map[string]ProfileConfig{"staging": {Hosts: map[string]HostConfig{}, Env: map[string]string{}, Databases: map[string]DatabaseConfig{
+			"mydb": {Engine: "postgres", Host: "global.example.com", Port: 5432, User: "u", Password: "p", Database: "d", Env: "DATABASE_URL"}}}}}
+	project := &Config{Env: map[string]string{}, Hosts: map[string]HostConfig{}, Databases: map[string]DatabaseConfig{},
+		Profiles: map[string]ProfileConfig{"staging": {Hosts: map[string]HostConfig{}, Env: map[string]string{}, Databases: map[string]DatabaseConfig{
+			"projdb": {Engine: "mysql", Host: "proj.example.com", Port: 3306, User: "u2", Password: "p2", Database: "d2", Env: "PROJ_URL"}}}}}
+	merged := global.Merge(project)
+	if len(merged.Profiles["staging"].Databases) != 2 {
+		t.Fatalf("profile databases from both files must merge, got %+v", merged.Profiles["staging"].Databases)
+	}
+}
+
+func TestValidateDatabasesRejectsDuplicateMySQLUsernames(t *testing.T) {
+	cfg := minimalValidDatabases()
+	cfg.Databases["mdb"] = DatabaseConfig{Engine: "mysql", Host: "h", Port: 3306, User: "mu", Password: "p", Database: "d", Env: "OTHER_URL"}
+	cfg.Databases["mdb2"] = DatabaseConfig{Engine: "mysql", Host: "h2", Port: 3306, User: "mu", Password: "p2", Database: "d2", Env: "THIRD_URL"}
+	err := cfg.ValidateDatabases()
+	if err == nil || !strings.Contains(err.Error(), "mdb2") {
+		t.Fatalf("expected duplicate-mysql-username error naming the colliding entry: %v", err)
+	}
+}
+
+func TestValidateDatabasesAllowsDuplicatePostgresUsernames(t *testing.T) {
+	// postgres aliases per entry, so shared usernames are fine — only the
+	// ProxySQL routing model (per-username default_hostgroup) breaks.
+	cfg := minimalValidDatabases()
+	cfg.Databases["pg2"] = DatabaseConfig{Engine: "postgres", Host: "h2", Port: 5432, User: "u", Password: "p2", Database: "d2", Env: "PG2_URL"}
+	if err := cfg.ValidateDatabases(); err != nil {
+		t.Fatalf("duplicate postgres usernames must validate: %v", err)
+	}
+}
+
+func TestValidateDatabasesRejectsWhitespaceInPgbouncerFields(t *testing.T) {
+	cfg := minimalValidDatabases()
+	db := cfg.Databases["mydb"]
+	db.Password = "pass with space"
+	cfg.Databases["mydb"] = db
+	err := cfg.ValidateDatabases()
+	if err == nil {
+		t.Fatal("expected whitespace-in-password error (the pgbouncer [databases] line would split)")
+	}
+	cfg2 := minimalValidDatabases()
+	db2 := cfg2.Databases["mydb"]
+	db2.Host = "host with space"
+	cfg2.Databases["mydb"] = db2
+	if err := cfg2.ValidateDatabases(); err == nil {
+		t.Fatal("expected whitespace-in-host error")
+	}
+	// mysql passwords are SQL literals and tolerate spaces — must NOT error
+	cfg3 := minimalValidDatabases()
+	db3 := DatabaseConfig{Engine: "mysql", Host: "h", Port: 3306, User: "mu", Password: "pass with space", Database: "d", Env: "MYSQL_URL"}
+	cfg3.Databases["mydb"] = db3
+	if err := cfg3.ValidateDatabases(); err != nil {
+		t.Fatalf("mysql password with space must validate: %v", err)
+	}
+}
