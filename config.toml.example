@@ -29,3 +29,23 @@ credential = "op://Personal/stripe-live/key"
 [profiles.production.env]
 RAILS_ENV = "production"
 PORT = "443"
+
+# Database credential isolation (optional)
+# Each entry starts a local pooler at session start (pgbouncer for postgres,
+# ProxySQL for mysql); the wrapped child gets <env> pointing at 127.0.0.1
+# with a random per-session password. The real password never reaches the
+# child. Requires the pgbouncer / proxysql binaries on PATH (or *_path
+# overrides below).
+#
+# [databases.mydb]
+# engine = "postgres"              # or "mysql"
+# host = "db.example.com"
+# port = 5432
+# user = "app_user"
+# password = "op://Private/mydb/password"   # op:// URI or literal
+# database = "appdb"
+# params = "sslmode=require"       # optional, engine-interpreted
+# env = "DATABASE_URL"             # env var injected into the wrapped child
+#
+# pgbouncer_path = "/usr/local/bin/pgbouncer"   # optional binary overrides
+# proxysql_path = "/usr/local/bin/proxysql"

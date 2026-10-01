@@ -223,6 +223,27 @@ Resolution is concurrent (one `op read` per env var, all running in parallel) wi
 
 Final child env = parent env ∪ global `[env]` ∪ profile `[profiles.<name>.env]`. Profile wins on conflict. Proxy-injected vars (`HTTPS_PROXY`, `NO_PROXY`, `PATH`, CA cert vars, `CREDPROXY_TOKEN`) always override config env vars.
 
+## Database Credential Isolation
+
+`[databases.*]` entries keep real database passwords out of the wrapped process. At session start credproxy launches a local pooler — pgbouncer for `engine = "postgres"`, ProxySQL for `engine = "mysql"` — that authenticates the child with a random per-session password while authenticating to the real database with the real credential (resolved from `op://` at startup, like host credentials). The child receives a localhost-only connection string via the env var you name in `env`:
+
+```toml
+[databases.mydb]
+engine = "postgres"
+host = "db.example.com"
+port = 5432
+user = "app_user"
+password = "op://Private/mydb/password"
+database = "appdb"
+env = "DATABASE_URL"
+```
+
+The child sees `DATABASE_URL=postgres://app_user:<random>@127.0.0.1:<port>/mydb` and every driver/ORM works unchanged — no sentinel convention to learn. Inherited `DATABASE_URL`, `PGPASSWORD`, and `MYSQL_PWD` are stripped from the child env, so a real connection string in your shell cannot silently bypass the pooler. This is the safe alternative to putting a resolved `DATABASE_URL` in `[env]` (see the security caveat above).
+
+**Honest limitation:** the real password exists in session-scoped `0600` files under a temp dir (and in ProxySQL's runtime state) for the life of the session. A same-user process that deliberately hunts the filesystem can find it. This scheme kills the accidental leak paths — env vars, `.env` files, logs, prompts — not a targeted same-user attacker.
+
+**Requirements:** `pgbouncer` / `proxysql` binaries on PATH, or `pgbouncer_path` / `proxysql_path` set in config. A missing binary fails startup rather than running unprotected.
+
 ## Agent Instructions
 
 Add the following block to your `AGENTS.md` or project instructions:
