@@ -801,3 +801,98 @@ func TestApplyProfileDatabases(t *testing.T) {
 		t.Fatalf("profile databases should overlay: %+v", applied.Databases["mydb"])
 	}
 }
+
+func minimalValidDatabases() *Config {
+	return &Config{
+		Databases: map[string]DatabaseConfig{
+			"mydb": {Engine: "postgres", Host: "h", Port: 5432, User: "u", Password: "p", Database: "d", Env: "DATABASE_URL"},
+		},
+	}
+}
+
+func TestValidateDatabasesRejectsUnknownEngine(t *testing.T) {
+	cfg := minimalValidDatabases()
+	db := cfg.Databases["mydb"]
+	db.Engine = "mongodb"
+	cfg.Databases["mydb"] = db
+	if err := cfg.ValidateDatabases(); err == nil {
+		t.Fatal("expected error for unknown engine")
+	}
+}
+
+func TestValidateDatabasesRequiresFields(t *testing.T) {
+	cfg := minimalValidDatabases()
+	db := cfg.Databases["mydb"]
+	db.Host = ""
+	cfg.Databases["mydb"] = db
+	if err := cfg.ValidateDatabases(); err == nil {
+		t.Fatal("expected error for missing host")
+	}
+}
+
+func TestValidateDatabasesRejectsInvalidPort(t *testing.T) {
+	cfg := minimalValidDatabases()
+	db := cfg.Databases["mydb"]
+	db.Port = 0
+	cfg.Databases["mydb"] = db
+	if err := cfg.ValidateDatabases(); err == nil {
+		t.Fatal("expected error for port 0")
+	}
+}
+
+func TestValidateDatabasesRejectsDuplicateEnvNames(t *testing.T) {
+	cfg := minimalValidDatabases()
+	cfg.Databases["second"] = DatabaseConfig{
+		Engine: "postgres", Host: "h", Port: 5432, User: "u",
+		Password: "p", Database: "d", Env: "DATABASE_URL",
+	}
+	err := cfg.ValidateDatabases()
+	if err == nil {
+		t.Fatal("expected error for duplicate env var name")
+	}
+	if !strings.Contains(err.Error(), "second") || !strings.Contains(err.Error(), "mydb") {
+		t.Fatalf("error should name both entries: %v", err)
+	}
+}
+
+func TestValidateDatabasesRejectsReservedEnvNames(t *testing.T) {
+	for _, name := range []string{"PATH", "HTTPS_PROXY", "SSL_CERT_FILE", "CREDPROXY_TOKEN", "PGPASSWORD"} {
+		cfg := minimalValidDatabases()
+		db := cfg.Databases["mydb"]
+	db.Env = name
+	cfg.Databases["mydb"] = db
+		if err := cfg.ValidateDatabases(); err == nil {
+			t.Fatalf("expected error for reserved env name %s", name)
+		}
+	}
+}
+
+func TestValidateDatabasesNoDatabasesOK(t *testing.T) {
+	cfg := &Config{}
+	if err := cfg.ValidateDatabases(); err != nil {
+		t.Fatalf("empty config should validate: %v", err)
+	}
+}
+
+func TestResolveDatabasePasswordsResolvesAndFailsFast(t *testing.T) {
+	cfg := minimalValidDatabases()
+	db := cfg.Databases["mydb"]
+	db.Password = "op://x/y/z"
+	cfg.Databases["mydb"] = db
+	fake := &stubResolver{resolved: map[string]string{"op://x/y/z": "resolved-pw"}}
+	if err := cfg.ResolveDatabasePasswords(context.Background(), fake); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Databases["mydb"].Password != "resolved-pw" {
+		t.Fatalf("password not written back: %q", cfg.Databases["mydb"].Password)
+	}
+
+	broken := &stubResolver{err: map[string]error{"op://x/y/z": errors.New("vault locked")}}
+	cfg2 := minimalValidDatabases()
+	db2 := cfg2.Databases["mydb"]
+	db2.Password = "op://x/y/z"
+	cfg2.Databases["mydb"] = db2
+	if err := cfg2.ResolveDatabasePasswords(context.Background(), broken); err == nil {
+		t.Fatal("expected fail-fast on resolution error")
+	}
+}
