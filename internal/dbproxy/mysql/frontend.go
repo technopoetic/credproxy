@@ -121,14 +121,21 @@ func FrontendAuth(conn net.Conn, sessionPassword string) error {
 	if clientCaps&capClientConnectWithDB != 0 {
 		// database cstring sits between the auth response and the plugin
 		// name; the relay ignores it (each listener serves one entry).
+		// pymysql sets this flag but omits the field entirely, ending its
+		// packet right after the plugin name — real servers treat a
+		// truncated response as "field absent" rather than a protocol
+		// error, and the relay must too (docs/connection-test-2.md).
 		if _, rest, err = readCString(rest); err != nil {
-			return fmt.Errorf("database: %w", err)
+			rest = nil
 		}
 	}
 	if clientCaps&capClientPluginAuth != 0 {
-		plugin, _, err = readCString(rest)
-		if err != nil {
-			return fmt.Errorf("auth plugin: %w", err)
+		// Absent plugin field (truncated packet) falls back to the plugin
+		// this relay offered in its greeting. Nothing here affects the
+		// security decision — only the session-password check below gates
+		// access.
+		if p, _, err := readCString(rest); err == nil && p != "" {
+			plugin = p
 		}
 	}
 	if plugin != pluginNativePassword {

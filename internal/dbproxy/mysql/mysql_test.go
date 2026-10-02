@@ -240,6 +240,63 @@ func TestFrontendAuthWrongToken(t *testing.T) {
 	}
 }
 
+// TestFrontendAuthPymysqlOmitsDatabase pins compatibility with pymysql's
+// handshake response: pymysql sets CLIENT_CONNECT_WITH_DB but omits the
+// database field entirely — the packet runs user -> auth response -> plugin
+// name with nothing in between (captured byte-for-byte in the repro behind
+// docs/connection-test-2.md; mycli/pymysql failed with
+// "auth plugin: unterminated cstring"). Real servers treat the missing
+// optional field as absent; the relay must too.
+func TestFrontendAuthPymysqlOmitsDatabase(t *testing.T) {
+	server, client := net.Pipe()
+	defer client.Close()
+	errCh := make(chan error, 1)
+	go func() {
+		server.SetDeadline(time.Now().Add(5 * time.Second))
+		errCh <- FrontendAuth(server, "sesspw")
+	}()
+
+	client.SetReadDeadline(time.Now().Add(5 * time.Second))
+	var head [4]byte
+	if _, err := ioReadFull(client, head[:]); err != nil {
+		t.Fatal(err)
+	}
+	n := int(head[0]) | int(head[1])<<8 | int(head[2])<<16
+	hs := make([]byte, n)
+	if _, err := ioReadFull(client, hs); err != nil {
+		t.Fatal(err)
+	}
+	scramble := parseScrambleFromHandshake(t, hs)
+
+	caps := uint32(capClientProtocol41 | capClientSecureConnection | capClientPluginAuth |
+		capClientPluginAuthLenenc | capClientConnectWithDB)
+	token := nativeToken("sesspw", scramble)
+	body := make([]byte, 0, 64)
+	body = append(body, byte(caps), byte(caps>>8), byte(caps>>16), byte(caps>>24))
+	var max4 [4]byte
+	binary.LittleEndian.PutUint32(max4[:], 1<<24)
+	body = append(body, max4[:]...)
+	body = append(body, 45) // charset utf8mb4
+	body = append(body, make([]byte, 23)...)
+	body = append(body, []byte("repro-user\x00")...)
+	body = append(body, byte(len(token))) // auth response, lenenc single-byte form (<251)
+	body = append(body, token...)
+	// NOTE: no database field, despite CLIENT_CONNECT_WITH_DB — this is the
+	// pymysql layout under test.
+	body = append(body, []byte("mysql_native_password\x00")...)
+	seq := byte(1)
+	if err := writePacket(client, &seq, body); err != nil {
+		t.Fatal(err)
+	}
+	ok := readPacket(t, client)
+	if ok[0] != 0x00 {
+		t.Fatalf("expected OK, got ERR packet %q", ok)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("FrontendAuth: %v", err)
+	}
+}
+
 func TestFrontendAuthAuthSwitch(t *testing.T) {
 	server, client := net.Pipe()
 	defer client.Close()
