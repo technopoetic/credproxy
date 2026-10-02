@@ -20,6 +20,14 @@ import (
 	"github.com/technopoetic/credproxy/internal/dbproxy"
 )
 
+// dialTimeout bounds the TCP connect to the backend; handshakeTimeout bounds
+// the pre-auth exchange. Bare net.Dialer + OS defaults mean a firewall-DROP
+// target hangs the session goroutine for minutes (review finding #3).
+var (
+	dialTimeout      = 15 * time.Second
+	handshakeTimeout = 30 * time.Second
+)
+
 // ListenAndServe accepts connections on ln until the listener is closed,
 // running the auth-split relay for each: authenticate the child with the
 // session password, dial the real database with the real password, relay.
@@ -114,11 +122,14 @@ func DialBackend(ctx context.Context, cfg config.DatabaseConfig, realPassword st
 	}
 
 	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
-	var d net.Dialer
+	d := net.Dialer{Timeout: dialTimeout}
 	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, nil, err
 	}
+	// Bound the pre-auth exchange; cleared once the backend reaches
+	// ReadyForQuery and the connection hands over to raw relaying.
+	_ = conn.SetDeadline(time.Now().Add(handshakeTimeout))
 
 	tlsConn, err := negotiateTLS(conn, cfg.Host, sslmode)
 	if err != nil {
@@ -183,6 +194,7 @@ func DialBackend(ctx context.Context, cfg config.DatabaseConfig, realPassword st
 			return nil, nil, &dbproxy.AuthRejection{Detail: "backend rejected connection: " + errorBodyMessage(body)}
 		case 'Z': // ReadyForQuery — auth complete, everything consumed
 			preamble = append(preamble, raw...)
+			_ = conn.SetDeadline(time.Time{})
 			return conn, preamble, nil
 		case 'N', 'S', 'K':
 			preamble = append(preamble, raw...)
@@ -352,14 +364,12 @@ func errorBodyMessage(body []byte) string {
 
 // isExpectedClose reports whether an error is the routine end of a
 // connection (client went away, cancel request) rather than a fault worth
-// logging.
+// logging. Deliberately error-type based rather than substring matching —
+// matching "closed" in a message could mute a genuine failure in the logs.
 func isExpectedClose(err error) bool {
-	if errors.Is(err, ErrCancelRequest) {
+	if errors.Is(err, ErrCancelRequest) || errors.Is(err, net.ErrClosed) {
 		return true
 	}
 	var netErr net.Error
-	if errors.As(err, &netErr) {
-		return true // timeouts/ECONNRESET on abandoned connections are routine
-	}
-	return strings.Contains(err.Error(), "closed")
+	return errors.As(err, &netErr) // timeouts/ECONNRESET on abandoned connections are routine
 }

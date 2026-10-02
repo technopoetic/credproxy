@@ -624,3 +624,99 @@ func drivePgAuth(t *testing.T, ln net.Listener, sessPw string) net.Conn {
 	pgWriteMsg(t, client, 'p', append([]byte(sessPw), 0))
 	return client
 }
+
+// TestDialBackendSilentServerTimesOut pins review finding #3: a server that
+// accepts TCP but never answers the TLS probe must not hang for the OS's
+// minutes-long default — firewall-DROP targets look exactly like this.
+func TestDialBackendSilentServerTimesOut(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		time.Sleep(5 * time.Second)
+	}()
+
+	cfg := testDB("sslmode=disable")
+	if p, ok := ln.Addr().(*net.TCPAddr); ok {
+		cfg.Port = p.Port
+	}
+	oldDial, oldHS := dialTimeout, handshakeTimeout
+	dialTimeout, handshakeTimeout = 300*time.Millisecond, 300*time.Millisecond
+	defer func() { dialTimeout, handshakeTimeout = oldDial, oldHS }()
+
+	start := time.Now()
+	conn, _, err := DialBackend(context.Background(), cfg, "REALPW", nil)
+	if conn != nil {
+		conn.Close()
+	}
+	if err == nil {
+		t.Fatal("expected an error against a silent server")
+	}
+	if took := time.Since(start); took > 3*time.Second {
+		t.Fatalf("silent server hung for %v (want ≈handshakeTimeout 300ms)", took)
+	}
+}
+
+// TestFrontendAuthGssEncDeclined pins the 'N' reply to a GSSENCRequest probe.
+// psql with Kerberos credentials sends this before SSLRequest; a hard error
+// instead of 'N' would break clients that should have fallen back.
+func TestFrontendAuthGssEncDeclined(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	done := make(chan error, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			done <- err
+			return
+		}
+		defer conn.Close()
+		conn.SetDeadline(time.Now().Add(5 * time.Second))
+		_, err = FrontendAuth(conn, "sesspw")
+		done <- err
+	}()
+
+	client, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	client.SetDeadline(time.Now().Add(5 * time.Second))
+
+	// GSSENCRequest probe: 8 bytes, code 80877104. The relay must decline
+	// with 'N', then accept an ordinary startup + password flow.
+	var probe [8]byte
+	binary.BigEndian.PutUint32(probe[0:], 8)
+	binary.BigEndian.PutUint32(probe[4:], 80877104)
+	if _, err := client.Write(probe[:]); err != nil {
+		t.Fatal(err)
+	}
+	var reply [1]byte
+	if _, err := io.ReadFull(client, reply[:]); err != nil {
+		t.Fatalf("no GSSENC reply: %v", err)
+	}
+	if reply[0] != 'N' {
+		t.Fatalf("expected 'N' for GSSENCRequest, got %q", reply[0])
+	}
+
+	pgSendStartup(t, client, "u", "appdb", nil)
+	typ, _ := pgReadMsg(t, client) // 'R' AuthenticationCleartextPassword
+	if typ != 'R' {
+		t.Fatalf("expected 'R' after declined GSSENC, got %c", typ)
+	}
+	pgWriteMsg(t, client, 'p', append([]byte("sesspw"), 0))
+	if err := <-done; err != nil {
+		t.Fatalf("FrontendAuth after GSSENC 'N': %v", err)
+	}
+}

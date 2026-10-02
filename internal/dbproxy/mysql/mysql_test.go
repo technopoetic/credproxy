@@ -819,3 +819,43 @@ func driveFrontendAuth(t *testing.T, ln net.Listener, sessPw string) net.Conn {
 	}
 	return client
 }
+
+// TestDialBackendSilentServerTimesOut pins review finding #3: a server that
+// accepts TCP but never speaks must not hang the session goroutine for the
+// OS's minutes-long default — this is exactly what a firewall-DROP target
+// (e.g. trusted-sources deny) looks like on the wire.
+func TestDialBackendSilentServerTimesOut(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		time.Sleep(5 * time.Second)
+	}()
+
+	cfg := testDBConfig()
+	if p, ok := ln.Addr().(*net.TCPAddr); ok {
+		cfg.Port = p.Port
+	}
+	oldDial, oldHS := dialTimeout, handshakeTimeout
+	dialTimeout, handshakeTimeout = 300*time.Millisecond, 300*time.Millisecond
+	defer func() { dialTimeout, handshakeTimeout = oldDial, oldHS }()
+
+	start := time.Now()
+	conn, err := DialBackend(context.Background(), cfg)
+	if conn != nil {
+		conn.Close()
+	}
+	if err == nil {
+		t.Fatal("expected an error against a silent server")
+	}
+	if took := time.Since(start); took > 3*time.Second {
+		t.Fatalf("silent server hung for %v (want ≈handshakeTimeout 300ms)", took)
+	}
+}

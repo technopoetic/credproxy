@@ -14,9 +14,19 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/technopoetic/credproxy/internal/config"
 	"github.com/technopoetic/credproxy/internal/dbproxy"
+)
+
+// dialTimeout bounds the TCP connect to the backend; handshakeTimeout bounds
+// the pre-auth exchange. Bare net.Dialer + OS defaults mean a firewall-DROP
+// target hangs the session goroutine for minutes (review finding #3 —
+// watched live against DigitalOcean's trusted-sources deny).
+var (
+	dialTimeout      = 15 * time.Second
+	handshakeTimeout = 30 * time.Second
 )
 
 // useSSLFromParams decides backend TLS from the entry's params. Validation
@@ -47,11 +57,14 @@ func DialBackend(ctx context.Context, cfg config.DatabaseConfig) (net.Conn, erro
 	useSSL := useSSLFromParams(cfg.Params)
 
 	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
-	var d net.Dialer
+	d := net.Dialer{Timeout: dialTimeout}
 	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, err
 	}
+	// Bound the pre-auth exchange; cleared once the backend is authenticated
+	// and the connection hands over to raw relaying.
+	_ = conn.SetDeadline(time.Now().Add(handshakeTimeout))
 
 	backendErr := func(format string, args ...any) (net.Conn, error) {
 		conn.Close()
@@ -151,6 +164,7 @@ func DialBackend(ctx context.Context, cfg config.DatabaseConfig) (net.Conn, erro
 		}
 		switch payload[0] {
 		case 0x00: // OK — handshake complete
+			_ = conn.SetDeadline(time.Time{})
 			return conn, nil
 		case 0xff: // ERR
 			conn.Close()
