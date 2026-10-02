@@ -39,6 +39,7 @@ v2 core implementation complete and live-tested. Tagged v0.1.0:
   (e.g. `opencode serve --service`) can outlive the credproxy session and keep failing network calls against the dead
   proxy URL — hit 2026-09-28 when a Sep 25 service poisoned opencode's provider catalog fetches for days
 - Consider adding `no_proxy_hosts` config to avoid routing LLM traffic through proxy
+- Add `ca_file` option to `[databases.*]` wiring `RootCAs` for real TLS verification. Today mysql backend TLS encrypts without chain verification (InsecureSkipVerify mirrors go-sql-driver use_ssl=1 semantics), and mysql `verify_ca`/`verify_identity` are rejected at config validation so nobody accepts a silent downgrade (2026-10-02 review finding #2). PG `verify-full` IS genuinely implemented but needs the same ca_file to be usable against private CAs.
 - Investigate TLS "bad record MAC" on first `op read` (handshake timeout during 1Password auth prompt)
 
 ## Known Issues
@@ -50,9 +51,11 @@ v2 core implementation complete and live-tested. Tagged v0.1.0:
   human is away (or slow), the 30s per-call deadline expires first and
   startup dies with "context deadline exceeded". Real-identity `op` is
   pre-authorized and never prompts (~12ms). Reproduced 2026-10-02: a prompt
-  was on screen, unapproved, while Richard was AFK. Decision pending: drop
-  the rename (startup never needs a human), or keep it and surface the
-  prompt state clearly.
+  was on screen, unapproved, while Richard was AFK. **DECIDED 2026-10-02: the
+  rename stays.** A human knowing exactly when something accesses 1Password
+  is part of the security promise; headless wraps are not in scope, so the
+  approval-at-cold-start cost is the price of the prompt, paid once per
+  cold start.
 - op/bw shim does not cover shells invoked *as* login shells (`bash -l`, `bash -lc`) inside the wrapped child: those
   read profile files, not `BASH_ENV`, and `path_helper` puts the real `op` back ahead of the shim. The common case
   (agent tool calls spawning non-interactive `bash -c`, including nested under a login parent) is covered via

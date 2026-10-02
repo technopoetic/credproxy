@@ -32,8 +32,10 @@ const (
 )
 
 // packetReader reads MySQL protocol packets: 3-byte little-endian length +
-// 1-byte sequence + payload. Sequence numbers are validated to increase by
-// one per packet (wrapping at 256) so a desynchronized peer fails loudly.
+// 1-byte sequence + payload. It records the peer's sequence number so
+// writes can answer with r.seq + 1; no strict validation is done —
+// AuthSwitchRequest flows and caching_sha2 round-trips produce legal
+// sequences a strict counter would false-reject.
 type packetReader struct {
 	conn net.Conn
 	seq  byte

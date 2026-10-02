@@ -35,7 +35,7 @@ func ListenAndServe(ln net.Listener, cfg config.DatabaseConfig, realPassword, se
 				return
 			}
 			client.SetDeadline(time.Time{})
-			backend, err := DialBackend(ctx(), cfg)
+			backend, err := DialBackend(context.Background(), cfg)
 			if err != nil {
 				logf("mysql relay: backend dial: %v", err)
 				_ = writeErrorPacket(client, 1045, dbproxy.ChildFacingBackendError(err))
@@ -46,8 +46,6 @@ func ListenAndServe(ln net.Listener, cfg config.DatabaseConfig, realPassword, se
 		}()
 	}
 }
-
-func ctx() context.Context { return context.Background() }
 
 // isExpectedClose reports whether an error is the routine end of a
 // connection rather than a fault worth logging.

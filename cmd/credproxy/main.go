@@ -95,9 +95,9 @@ func main() {
 	}
 
 	// runWrap returns the child's exit code rather than exiting itself: the
-	// poolers and shim dir are cleaned up by its defers, and os.Exit would
-	// skip them — leaking the 0600 temp dir with the real password on every
-	// non-zero child exit.
+	// database relays and shim directory are cleaned up by its defers, and
+	// os.Exit would skip them — leaving a shim dir (and its exit-1 op/bw
+	// stubs) on the temp filesystem after every non-zero child exit.
 	os.Exit(runWrap(cfg, caProvider, res, logger, logFile, args))
 }
 

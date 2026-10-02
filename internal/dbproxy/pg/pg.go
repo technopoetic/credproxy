@@ -16,10 +16,14 @@ import (
 // authentication and cannot be routed 1:1; the caller closes the connection.
 var ErrCancelRequest = errors.New("postgres cancel request")
 
-// sslRequestCode and cancelRequestCode are the protocol's special 8-byte
-// startup probes (Postgres docs: 55.1. Startup Message, "special" codes).
+// The protocol's special 8-byte startup probes (Postgres docs: 55.1,
+// "special" codes). SSLRequest asks for TLS; GSSENCRequest for GSSAPI
+// encryption — both are answered 'N' on the loopback leg and the client
+// falls back to the next thing (SSLRequest, then plaintext startup), which
+// is exactly the sequence psql performs.
 const (
 	sslRequestCode    = 80877103
+	gssEncRequestCode = 80877104
 	cancelRequestCode = 80877102
 	protocolVersion3  = 196608
 )
@@ -87,7 +91,7 @@ func readStartup(conn net.Conn) (map[string]string, error) {
 			}
 			code := int(codeBuf[0])<<24 | int(codeBuf[1])<<16 | int(codeBuf[2])<<8 | int(codeBuf[3])
 			switch code {
-			case sslRequestCode:
+			case sslRequestCode, gssEncRequestCode:
 				if _, err := conn.Write([]byte{'N'}); err != nil {
 					return nil, err
 				}
