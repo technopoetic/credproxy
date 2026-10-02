@@ -26,7 +26,13 @@ func main() {
 	profile := flag.String("profile", "", "config profile to activate")
 	sentinel := flag.String("sentinel", "CREDPROXY_TOKEN", "sentinel string to substitute")
 	openProxy := flag.Bool("open-proxy", false, "allow all hosts (not recommended)")
+	version := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
+
+	if *version {
+		fmt.Println(versionString())
+		return
+	}
 
 	args := flag.Args()
 	if len(args) == 0 {

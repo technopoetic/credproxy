@@ -69,7 +69,10 @@ The host key must be the exact hostname as it appears in the URL — full FQDN, 
 --profile <name>         Select config profile (staging, production, etc.)
 --sentinel <string>      Sentinel string to substitute (default: CREDPROXY_TOKEN)
 --open-proxy             Allow all hosts (not recommended)
+--version                Print version and exit
 ```
+
+The version string comes from Go's embedded build info: installs via `go install ...@vX.Y.Z` report the tag; `go build` from a checkout reports `devel` plus the commit.
 
 ## Auth Compatibility
 
