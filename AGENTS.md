@@ -43,6 +43,16 @@ v2 core implementation complete and live-tested. Tagged v0.1.0:
 
 ## Known Issues
 
+- op:// resolution fails at wrap startup whenever 1Password needs an approval
+  for the renamed client and nobody approves in time: the provider renames
+  `argv[0]` to "credproxy-op", which 1Password treats as a separate client
+  identity — it shows an approval prompt on each cold authorization. If the
+  human is away (or slow), the 30s per-call deadline expires first and
+  startup dies with "context deadline exceeded". Real-identity `op` is
+  pre-authorized and never prompts (~12ms). Reproduced 2026-10-02: a prompt
+  was on screen, unapproved, while Richard was AFK. Decision pending: drop
+  the rename (startup never needs a human), or keep it and surface the
+  prompt state clearly.
 - op/bw shim does not cover shells invoked *as* login shells (`bash -l`, `bash -lc`) inside the wrapped child: those
   read profile files, not `BASH_ENV`, and `path_helper` puts the real `op` back ahead of the shim. The common case
   (agent tool calls spawning non-interactive `bash -c`, including nested under a login parent) is covered via
