@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,48 @@ import (
 func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
+
+// urlPassword extracts the password component from a relay URL.
+func urlPassword(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	pw, _ := u.User.Password()
+	return pw
+}
+
+// TestManagerDistinctSessionPasswords pins per-relay credential isolation:
+// each relay gets its own random session password, so a child that learns the
+// staging relay URL cannot authenticate to the prod relay by port-scanning
+// loopback. It also pins that the real configured password never appears in
+// the child-visible URL.
+func TestManagerDistinctSessionPasswords(t *testing.T) {
+	cfg := &config.Config{
+		Databases: map[string]config.DatabaseConfig{
+			"a": {Engine: "mysql", Host: "127.0.0.1", Port: 59997, User: "u1", Password: "REAL1", Database: "dba", Env: "A_URL"},
+			"b": {Engine: "mysql", Host: "127.0.0.1", Port: 59996, User: "u2", Password: "REAL2", Database: "dbb", Env: "B_URL"},
+		},
+	}
+	m := NewManager(cfg, testLogger())
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer m.Stop()
+
+	pwA := urlPassword(m.Env["A_URL"])
+	pwB := urlPassword(m.Env["B_URL"])
+	if pwA == "" || pwB == "" {
+		t.Fatalf("empty session password(s): A=%q B=%q", pwA, pwB)
+	}
+	if pwA == pwB {
+		t.Fatalf("relays share one session password (%q); per-relay isolation broken", pwA)
+	}
+	if pwA == "REAL1" || pwB == "REAL2" {
+		t.Fatal("real backend password leaked into the child-visible URL")
+	}
+}
+
 
 func TestManagerNoDatabasesIsNoop(t *testing.T) {
 	m := NewManager(&config.Config{}, testLogger())
@@ -33,8 +76,12 @@ func TestManagerNoDatabasesIsNoop(t *testing.T) {
 func TestManagerListenersServeAndClose(t *testing.T) {
 	cfg := &config.Config{
 		Databases: map[string]config.DatabaseConfig{
-			"mydb": {Engine: "postgres", Host: "127.0.0.1", Port: 59999, User: "app_user", Password: "REAL", Database: "d", Env: "DATABASE_URL"},
-			"mdb":  {Engine: "mysql", Host: "127.0.0.1", Port: 59998, User: "mu", Password: "REAL", Database: "d", Env: "MYSQL_URL"},
+			// Alias and Database deliberately differ: the URL must advertise
+			// the database the backend actually pins (Database), not the
+			// config alias — a mismatch here makes the prod relay silently
+			// land on staging (docs/connection_test.md observation 2).
+			"mydb": {Engine: "postgres", Host: "127.0.0.1", Port: 59999, User: "app_user", Password: "REAL", Database: "pgdb", Env: "DATABASE_URL"},
+			"mdb":  {Engine: "mysql", Host: "127.0.0.1", Port: 59998, User: "mu", Password: "REAL", Database: "mydb_real", Env: "MYSQL_URL"},
 		},
 	}
 	m := NewManager(cfg, testLogger())
@@ -44,12 +91,14 @@ func TestManagerListenersServeAndClose(t *testing.T) {
 
 	if !strings.HasPrefix(m.Env["DATABASE_URL"], "postgres://app_user:") ||
 		!strings.Contains(m.Env["DATABASE_URL"], "@127.0.0.1:") ||
-		!strings.Contains(m.Env["DATABASE_URL"], "/mydb") ||
+		!strings.Contains(m.Env["DATABASE_URL"], "/pgdb") ||
+		strings.Contains(m.Env["DATABASE_URL"], "/mydb") ||
 		!strings.Contains(m.Env["DATABASE_URL"], "sslmode=disable") {
 		t.Fatalf("postgres URL wrong: %s", m.Env["DATABASE_URL"])
 	}
 	if !strings.HasPrefix(m.Env["MYSQL_URL"], "mysql://mu:") ||
-		!strings.Contains(m.Env["MYSQL_URL"], "/mdb") {
+		!strings.Contains(m.Env["MYSQL_URL"], "/mydb_real") ||
+		strings.Contains(m.Env["MYSQL_URL"], "/mdb") {
 		t.Fatalf("mysql URL wrong: %s", m.Env["MYSQL_URL"])
 	}
 	strip := strings.Join(m.Strip, ",")

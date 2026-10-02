@@ -12,6 +12,7 @@ import (
 	"encoding/binary"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"math/big"
 	"net"
 	"testing"
@@ -570,18 +571,21 @@ func TestBackendCachingSha2FullAuthOverTLS(t *testing.T) {
 			backendErr <- err
 			return
 		}
-		// full auth demanded — over TLS the relay must send the masked
-		// password WITHOUT requesting a public key (requesting one
-		// deadlocks: the server sends nothing until it has the password)
+		// full auth demanded — over TLS the relay must send the cleartext
+		// password NUL-terminated, WITHOUT requesting a public key
+		// (requesting one deadlocks: the server sends nothing until it has
+		// the password). XOR-masking is only for the RSA path; the server
+		// hashes whatever bytes it receives, so masked bytes fail auth
+		// with 1045.
 		_ = writePacket(tc, &seq, []byte{0x01, 0x04})
-		masked, err := readPacketErr(tc)
+		got, err := readPacketErr(tc)
 		if err != nil {
 			backendErr <- errors.New("no password received over TLS (deadlock): " + err.Error())
 			return
 		}
-		want := xorPassword(append([]byte("REALPW"), 0), fixedScramble)
-		if !bytes.Equal(masked, want) {
-			backendErr <- errors.New("masked password mismatch over TLS")
+		want := append([]byte("REALPW"), 0)
+		if !bytes.Equal(got, want) {
+			backendErr <- fmt.Errorf("full-auth payload over TLS: got %x, want cleartext password+NUL", got)
 			return
 		}
 		_ = writePacket(tc, &seq, []byte{0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00})

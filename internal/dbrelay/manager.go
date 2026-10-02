@@ -49,15 +49,18 @@ func (m *Manager) Start(ctx context.Context) error {
 		return nil
 	}
 
-	password, err := sessionPassword()
-	if err != nil {
-		return fmt.Errorf("generating session password: %w", err)
-	}
-
 	m.Env = make(map[string]string, len(m.cfg.Databases))
 
 	for _, name := range sortedNames(m.cfg.Databases) {
 		db := m.cfg.Databases[name]
+		// Per-relay password: a child that learns one relay's URL (and
+		// port-scans loopback for the others) must not be able to
+		// authenticate to a different relay.
+		password, err := sessionPassword()
+		if err != nil {
+			m.Stop()
+			return fmt.Errorf("generating session password for database %q: %w", name, err)
+		}
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			m.Stop()
@@ -69,17 +72,17 @@ func (m *Manager) Start(ctx context.Context) error {
 		}
 		switch db.Engine {
 		case "postgres":
-			go func(name string, db config.DatabaseConfig) {
+			go func(name string, db config.DatabaseConfig, password string) {
 				if err := pg.ListenAndServe(ln, db, db.Password, password, m.logf); err != nil && !isListenerClosed(err) {
 					m.logger.Warn("postgres relay stopped", "database", name, "err", err)
 				}
-			}(name, db)
+			}(name, db, password)
 		case "mysql":
-			go func(name string, db config.DatabaseConfig) {
+			go func(name string, db config.DatabaseConfig, password string) {
 				if err := mysql.ListenAndServe(ln, db, db.Password, password, m.logf); err != nil && !isListenerClosed(err) {
 					m.logger.Warn("mysql relay stopped", "database", name, "err", err)
 				}
-			}(name, db)
+			}(name, db, password)
 		}
 		m.computeEnv(db.Engine, name, db, password)
 	}
@@ -96,7 +99,7 @@ func (m *Manager) Start(ctx context.Context) error {
 // DATABASE_URL in the parent shell would defeat isolation) plus the engine's
 // standard CLI password variable.
 func (m *Manager) computeEnv(engine, name string, db config.DatabaseConfig, password string) {
-	m.Env[db.Env] = buildURL(engine, db.User, password, m.ports[name], name)
+	m.Env[db.Env] = buildURL(engine, db.User, password, m.ports[name], db.Database)
 	m.Strip = append(m.Strip, db.Env)
 	if engine == "postgres" {
 		m.Strip = append(m.Strip, "PGPASSWORD")
@@ -120,13 +123,15 @@ func (m *Manager) Stop() {
 
 // buildURL constructs the injected connection string with net/url so special
 // characters in user/password are percent-encoded exactly as drivers expect.
-func buildURL(engine, user, password string, port int, alias string) string {
+// The path is the database the backend actually pins (db.Database), not the
+// config alias — the child's URL must tell the truth about where it lands.
+func buildURL(engine, user, password string, port int, database string) string {
 	scheme := engine // "postgres" and "mysql" are already the URL schemes
 	u := url.URL{
 		Scheme: scheme,
 		User:   url.UserPassword(user, password),
 		Host:   net.JoinHostPort("127.0.0.1", strconv.Itoa(port)),
-		Path:   "/" + alias,
+		Path:   "/" + database,
 	}
 	if engine == "postgres" {
 		// The relay listens on loopback only and TLS on that leg is a

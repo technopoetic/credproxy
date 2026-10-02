@@ -177,16 +177,21 @@ func DialBackend(ctx context.Context, cfg config.DatabaseConfig) (net.Conn, erro
 				continue
 			case 0x04: // full auth required
 				var toSend []byte
-				masked := xorPassword(append([]byte(cfg.Password), 0), scramble)
 				if isTLS {
-					// The password is protected by the TLS channel — send
-					// it directly. The server sends nothing until it has
-					// the password, so a public-key request here would
-					// deadlock both sides.
-					toSend = masked
+					// The password is protected by the TLS channel — send it
+					// directly, NUL-terminated, per the caching_sha2 spec. The
+					// server hashes whatever bytes it receives, so this must be
+					// the cleartext password; XOR-masking is only for the RSA
+					// path below. The server sends nothing until it has the
+					// password, so a public-key request here would deadlock
+					// both sides.
+					toSend = append([]byte(cfg.Password), 0)
 				} else {
 					// Insecure channel: request the server's RSA public
 					// key (packet payload 0x02), then read the key packet.
+					// The password is XOR-masked with the scramble and
+					// RSA-OAEP encrypted, per the caching_sha2 spec.
+					masked := xorPassword(append([]byte(cfg.Password), 0), scramble)
 					if err := w.write([]byte{0x02}); err != nil {
 						return backendErr("requesting rsa key: %v", err)
 					}
