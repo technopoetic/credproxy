@@ -70,7 +70,7 @@ v2 core implementation complete and live-tested. Tagged v0.1.0:
 - First `op read` call can cause TLS handshake timeout if 1Password auth prompt takes >30s. The credential caches after first resolution, so subsequent requests work.
 - 1Password biometric prompt shows "tmux" (not "credproxy-op") when running inside tmux — 1Password reads the controlling terminal, not argv[0]
 - Logs go to `~/.config/credproxy/credproxy.log`, not stderr (avoids TUI ghosting)
-- Same-host LLM conflict: when the LLM provider host is also a configured credential host, credproxy substitutes the sentinel in the system prompt body on its way to the LLM, exposing the real credential. Mitigation: use a different LLM provider than the credential host. Documented in README.
+- Same-host LLM conflict: when the LLM provider host is also a configured credential host, credproxy substitutes the sentinel in the system prompt body on its way to the LLM, exposing the real credential. Mitigation: use a different LLM provider than the credential host. Documented in README (short form) and ADVANCED.md (full explanation). README is the simple entrypoint; ADVANCED.md holds advanced configuration and internals.
 
 ## How to Build & Test
 
