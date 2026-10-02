@@ -51,6 +51,9 @@ func DialBackend(ctx context.Context, cfg config.DatabaseConfig) (net.Conn, erro
 	if err != nil {
 		return backendErr("%v", err)
 	}
+	// Sequence numbers alternate across both directions: our handshake
+	// response answers the server's packet.
+	w.seq = r.seq + 1
 
 	isTLS := false
 	if useSSL && serverCaps&capClientSSL != 0 {
@@ -115,6 +118,7 @@ func DialBackend(ctx context.Context, cfg config.DatabaseConfig) (net.Conn, erro
 		if err != nil {
 			return backendErr("backend read: %v", err)
 		}
+		w.seq = r.seq + 1 // MySQL sequences alternate across both directions
 		switch payload[0] {
 		case 0x00: // OK — handshake complete
 			return conn, nil
@@ -143,9 +147,21 @@ func DialBackend(ctx context.Context, cfg config.DatabaseConfig) (net.Conn, erro
 			case 0x03: // fast auth success; next packet is OK
 				continue
 			case 0x04: // full auth required
+				if !isTLS {
+					// Insecure channel: request the server's RSA public
+					// key (packet payload 0x02), then read the key packet.
+					if err := w.write([]byte{0x02}); err != nil {
+						return backendErr("requesting rsa key: %v", err)
+					}
+				}
 				pubPkt, err := r.next()
 				if err != nil {
 					return backendErr("reading server rsa key: %v", err)
+				}
+				w.seq = r.seq + 1 // answer the key packet with the ciphertext
+				if len(pubPkt) > 1 && pubPkt[0] == 0x01 {
+					// AuthMoreData prefix on the key packet
+					pubPkt = pubPkt[1:]
 				}
 				masked := xorPassword(append([]byte(cfg.Password), 0), scramble)
 				var toSend []byte
@@ -222,6 +238,12 @@ func parseServerHandshake(hs []byte) (uint32, []byte, string, error) {
 		}
 		rest = rest[1:] // NUL terminator of part-1 when no PLUGIN_AUTH
 	}
+	// 10 reserved (all-zero) bytes sit between the auth-plugin-data length
+	// and part-2 in the Initial Handshake.
+	if len(rest) < 10 {
+		return 0, nil, "", errors.New("short reserved field")
+	}
+	rest = rest[10:]
 	plugin := pluginNativePassword
 	var part2 []byte
 	if caps&capClientSecureConnection != 0 {

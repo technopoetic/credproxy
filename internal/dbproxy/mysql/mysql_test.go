@@ -135,6 +135,7 @@ func buildInitialHandshake(scramble []byte, plugin string, caps uint32) []byte {
 	p = append(p, 2, 0) // status
 	p = append(p, byte(caps>>16), byte(caps>>24))
 	p = append(p, 21) // auth-plugin-data len (12 bytes part-2 + NUL)
+	p = append(p, make([]byte, 10)...) // reserved (all zeros)
 	p = append(p, scramble[8:20]...)
 	p = append(p, 0) // part-2 NUL terminator — the field is 13 bytes
 	p = append(p, plugin...)
@@ -291,6 +292,9 @@ func parseScrambleFromHandshake(t *testing.T, hs []byte) []byte {
 	// connid(4) part1(8) filler(1) capsLo(2) charset(1) status(2) capsHi(2)
 	authLen := int(rest[4+8+1+2+1+2+2])
 	rest = rest[4+8+1+2+1+2+2+1:]
+	// 10 reserved (all-zero) bytes sit between the auth-plugin-data length
+	// and part-2.
+	rest = rest[10:]
 	// part-2 is authLen-8 bytes including its NUL terminator; the scramble
 	// itself is the 12 bytes before that NUL.
 	part2 := authLen - 8

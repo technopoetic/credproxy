@@ -106,8 +106,11 @@ func FrontendAuth(conn net.Conn, sessionPassword string) (extraParams map[string
 // ReadyForQuery) that must be forwarded to the client before relaying.
 func DialBackend(ctx context.Context, cfg config.DatabaseConfig, realPassword string, extraParams map[string]string) (net.Conn, []byte, error) {
 	sslmode := "prefer"
-	if cfg.Params != "" {
-		sslmode = cfg.Params
+	for _, kv := range strings.Split(cfg.Params, ",") {
+		parts := strings.SplitN(strings.TrimSpace(kv), "=", 2)
+		if len(parts) == 2 && parts[0] == "sslmode" && parts[1] != "" {
+			sslmode = parts[1]
+		}
 	}
 
 	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))

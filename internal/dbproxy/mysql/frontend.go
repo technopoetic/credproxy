@@ -84,6 +84,7 @@ func FrontendAuth(conn net.Conn, sessionPassword string) error {
 	hs = append(hs, 2, 0)                      // status flags
 	hs = append(hs, byte(caps>>16), byte(caps>>24))
 	hs = append(hs, 21) // auth-plugin-data length (12 bytes part-2 + NUL)
+	hs = append(hs, make([]byte, 10)...) // reserved (all zeros) — required by the protocol
 	hs = append(hs, scramble[8:20]...)
 	hs = append(hs, 0) // part-2 NUL terminator — the field is 13 bytes
 	hs = append(hs, pluginNativePassword...)
@@ -96,6 +97,9 @@ func FrontendAuth(conn net.Conn, sessionPassword string) error {
 	if err != nil {
 		return err
 	}
+	// MySQL's sequence counter is global across both directions: our next
+	// packet must answer the one just received.
+	w.seq = r.seq + 1
 	if len(payload) < 32 {
 		return fmt.Errorf("short handshake response (%d bytes)", len(payload))
 	}
@@ -136,12 +140,14 @@ func FrontendAuth(conn net.Conn, sessionPassword string) error {
 		sw = append(sw, 0)
 		sw = append(sw, scramble...)
 		sw = append(sw, 0)
+		w.seq = r.seq + 1
 		if err := w.write(sw); err != nil {
 			return err
 		}
 		if payload, err = r.next(); err != nil {
 			return err
 		}
+		w.seq = r.seq + 1
 		authResp = payload
 	}
 	expected := nativeToken(sessionPassword, scramble)
