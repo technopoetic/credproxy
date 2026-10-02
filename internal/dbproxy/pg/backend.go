@@ -46,7 +46,7 @@ func ListenAndServe(ln net.Listener, cfg config.DatabaseConfig, realPassword, se
 			backend, preamble, err := DialBackend(context.Background(), cfg, realPassword, params)
 			if err != nil {
 				logf("pg relay: backend dial: %v", err)
-				_ = writeMessage(client, 'E', errorResponse("08006", err.Error()))
+				_ = writeMessage(client, 'E', errorResponse("08006", dbproxy.ChildFacingBackendError(err)))
 				return
 			}
 			defer backend.Close()
@@ -179,7 +179,8 @@ func DialBackend(ctx context.Context, cfg config.DatabaseConfig, realPassword st
 				return backendErr("unsupported backend auth method %d", code)
 			}
 		case 'E':
-			return backendErr("backend rejected connection: %s", errorBodyMessage(body))
+			conn.Close()
+			return nil, nil, &dbproxy.AuthRejection{Detail: "backend rejected connection: " + errorBodyMessage(body)}
 		case 'Z': // ReadyForQuery — auth complete, everything consumed
 			preamble = append(preamble, raw...)
 			return conn, preamble, nil

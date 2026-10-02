@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -703,4 +704,118 @@ func TestBackendEmptyPacketDoesNotPanic(t *testing.T) {
 	if _, err := DialBackend(context.Background(), cfg); err == nil {
 		t.Fatal("expected error on empty backend packet")
 	}
+}
+
+// TestChildFacingDialFailureIsSanitized pins review finding #1: when the
+// backend cannot be reached, the child must get a generic category, not the
+// dial error — which embeds the real hostname the feature exists to hide.
+// Full detail belongs only in credproxy.log.
+func TestChildFacingDialFailureIsSanitized(t *testing.T) {
+	cfg := testDBConfig()
+	cfg.Host = "do-not-leak-marker.example"
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go ListenAndServe(ln, cfg, "REALPW", "sesspw", func(string, ...any) {})
+
+	client := driveFrontendAuth(t, ln, "sesspw")
+	defer client.Close()
+
+	pkt := readPacket(t, client)
+	if pkt[0] != 0xff {
+		t.Fatalf("expected ERR, got %q", pkt)
+	}
+	s := string(pkt)
+	if strings.Contains(s, "do-not-leak-marker.example") || strings.Contains(s, "getaddrinfo") || strings.Contains(s, "lookup") {
+		t.Fatalf("sanitization leak: %q", pkt)
+	}
+	if !strings.Contains(s, "upstream connection failed") {
+		t.Fatalf("expected generic category, got %q", pkt)
+	}
+}
+
+// TestChildFacingAuthRejectionIsSanitized pins the same finding for upstream
+// credential rejection: the server's denial message may embed the user,
+// client egress IP, and error wording; the child gets the category only.
+func TestChildFacingAuthRejectionIsSanitized(t *testing.T) {
+	cfg := testDBConfig()
+	backend, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { backend.Close() })
+	if p, ok := backend.Addr().(*net.TCPAddr); ok {
+		cfg.Port = p.Port
+	}
+	go func() {
+		conn, err := backend.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		conn.SetDeadline(time.Now().Add(5 * time.Second))
+		var seq byte
+		_ = writePacket(conn, &seq, buildInitialHandshake(fixedScramble, pluginNativePassword, serverCaps))
+		if _, err := readPacketErr(conn); err != nil {
+			return
+		}
+		errPkt := []byte{0xff, 0x15, 0x04, '#', 'H', 'Y', '0', '0', '0'}
+		errPkt = append(errPkt, "Access denied for user 'agent-user'@'10.9.8.7' (using password: YES)"...)
+		_ = writePacket(conn, &seq, errPkt)
+	}()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go ListenAndServe(ln, cfg, "REALPW", "sesspw", func(string, ...any) {})
+
+	client := driveFrontendAuth(t, ln, "sesspw")
+	defer client.Close()
+
+	pkt := readPacket(t, client)
+	if pkt[0] != 0xff {
+		t.Fatalf("expected ERR, got %q", pkt)
+	}
+	s := string(pkt)
+	if strings.Contains(s, "10.9.8.7") || strings.Contains(s, "Access denied") {
+		t.Fatalf("sanitization leak: %q", pkt)
+	}
+	if !strings.Contains(s, "upstream authentication failed") {
+		t.Fatalf("expected generic category, got %q", pkt)
+	}
+}
+
+// driveFrontendAuth connects to a relay listener and completes the frontend
+// handshake with the session password, ending right after the OK packet —
+// the point where the relay starts dialing the backend.
+func driveFrontendAuth(t *testing.T, ln net.Listener, sessPw string) net.Conn {
+	t.Helper()
+	client, err := net.DialTimeout("tcp", ln.Addr().String(), 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.SetDeadline(time.Now().Add(5 * time.Second))
+	var head [4]byte
+	if _, err := ioReadFull(client, head[:]); err != nil {
+		t.Fatal(err)
+	}
+	n := int(head[0]) | int(head[1])<<8 | int(head[2])<<16
+	hs := make([]byte, n)
+	if _, err := ioReadFull(client, hs); err != nil {
+		t.Fatal(err)
+	}
+	scramble := parseScrambleFromHandshake(t, hs)
+	seq := byte(1)
+	if err := writePacket(client, &seq, buildHandshakeResponse(nativeToken(sessPw, scramble), pluginNativePassword, "appdb")); err != nil {
+		t.Fatal(err)
+	}
+	if ok := readPacket(t, client); ok[0] != 0x00 {
+		t.Fatalf("expected OK packet after frontend auth, got %q", ok)
+	}
+	return client
 }

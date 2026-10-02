@@ -521,3 +521,106 @@ func TestFrontendAuthHugeLengthRejected(t *testing.T) {
 		t.Fatal("FrontendAuth still allocating/blocked on absurd length")
 	}
 }
+
+// TestChildFacingDialFailureIsSanitized pins review finding #1: when the
+// backend cannot be reached, the child must get a generic category, not the
+// dial error embedding the real hostname the feature exists to hide.
+func TestChildFacingDialFailureIsSanitized(t *testing.T) {
+	cfg := testDB("sslmode=disable")
+	cfg.Host = "do-not-leak-marker.example"
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go ListenAndServe(ln, cfg, "REALPW", "sesspw", func(string, ...any) {})
+
+	client := drivePgAuth(t, ln, "sesspw")
+	defer client.Close()
+
+	typ, body := pgReadMsg(t, client)
+	if typ != 'E' {
+		t.Fatalf("expected 'E' after failed backend dial, got %c", typ)
+	}
+	s := string(body)
+	if strings.Contains(s, "do-not-leak-marker.example") || strings.Contains(s, "getaddrinfo") || strings.Contains(s, "lookup") {
+		t.Fatalf("sanitization leak: %q", body)
+	}
+	if !strings.Contains(s, "upstream connection failed") {
+		t.Fatalf("expected generic category, got %q", body)
+	}
+}
+
+// TestChildFacingAuthRejectionIsSanitized pins the same finding for upstream
+// credential rejection: the server's denial message may embed the user and
+// context; the child gets the category only.
+func TestChildFacingAuthRejectionIsSanitized(t *testing.T) {
+	cfg := testDB("sslmode=disable")
+	backend, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { backend.Close() })
+	if p, ok := backend.Addr().(*net.TCPAddr); ok {
+		cfg.Port = p.Port
+	}
+	go func() {
+		conn, err := backend.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		conn.SetDeadline(time.Now().Add(5 * time.Second))
+		// Read whatever the relay sends first (the startup message), then
+		// reject auth — framing-agnostic so the fake can't race itself.
+		var startup [512]byte
+		if _, err := conn.Read(startup[:]); err != nil {
+			return
+		}
+		if err := writeMessage(conn, 'E', errorResponse("28P01", `password authentication failed for user "agent-user" on host 10.9.8.7`)); err != nil {
+			return
+		}
+	}()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go ListenAndServe(ln, cfg, "REALPW", "sesspw", func(string, ...any) {})
+
+	client := drivePgAuth(t, ln, "sesspw")
+	defer client.Close()
+
+	typ, body := pgReadMsg(t, client)
+	if typ != 'E' {
+		t.Fatalf("expected 'E' after backend rejection, got %c", typ)
+	}
+	s := string(body)
+	if strings.Contains(s, "10.9.8.7") || strings.Contains(s, "agent-user") {
+		t.Fatalf("sanitization leak: %q", body)
+	}
+	if !strings.Contains(s, "upstream authentication failed") {
+		t.Fatalf("expected generic category, got %q", body)
+	}
+}
+
+// drivePgAuth connects to a relay listener, finishes the frontend password
+// exchange with the session password, and stops at the point where the relay
+// dials the backend.
+func drivePgAuth(t *testing.T, ln net.Listener, sessPw string) net.Conn {
+	t.Helper()
+	client, err := net.DialTimeout("tcp", ln.Addr().String(), 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.SetDeadline(time.Now().Add(5 * time.Second))
+	pgSendStartup(t, client, "anybody", "appdb", nil)
+	typ, _ := pgReadMsg(t, client) // 'R' AuthenticationCleartextPassword
+	if typ != 'R' {
+		t.Fatalf("expected 'R', got %c", typ)
+	}
+	pgWriteMsg(t, client, 'p', append([]byte(sessPw), 0))
+	return client
+}

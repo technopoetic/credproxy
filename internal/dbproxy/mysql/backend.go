@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/technopoetic/credproxy/internal/config"
+	"github.com/technopoetic/credproxy/internal/dbproxy"
 )
 
 // useSSLFromParams decides backend TLS from the entry's params. Validation
@@ -152,7 +153,8 @@ func DialBackend(ctx context.Context, cfg config.DatabaseConfig) (net.Conn, erro
 		case 0x00: // OK — handshake complete
 			return conn, nil
 		case 0xff: // ERR
-			return backendErr("backend auth failed: %s", errPacketMessage(payload))
+			conn.Close()
+			return nil, &dbproxy.AuthRejection{Detail: "backend auth failed: " + errPacketMessage(payload)}
 		case 0xfe: // AuthSwitchRequest
 			if len(payload) < 2 {
 				return backendErr("short auth switch")

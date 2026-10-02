@@ -38,7 +38,7 @@ func ListenAndServe(ln net.Listener, cfg config.DatabaseConfig, realPassword, se
 			backend, err := DialBackend(ctx(), cfg)
 			if err != nil {
 				logf("mysql relay: backend dial: %v", err)
-				_ = writeErrorPacket(client, 1045, fmt.Sprintf("backend: %v", err))
+				_ = writeErrorPacket(client, 1045, dbproxy.ChildFacingBackendError(err))
 				return
 			}
 			defer backend.Close()
