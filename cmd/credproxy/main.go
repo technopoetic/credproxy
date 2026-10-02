@@ -15,8 +15,8 @@ import (
 
 	"github.com/technopoetic/credproxy/internal/ca"
 	"github.com/technopoetic/credproxy/internal/config"
-	"github.com/technopoetic/credproxy/internal/mitm"
 	"github.com/technopoetic/credproxy/internal/dbrelay"
+	"github.com/technopoetic/credproxy/internal/mitm"
 	"github.com/technopoetic/credproxy/internal/providers"
 	"github.com/technopoetic/credproxy/internal/resolver"
 )

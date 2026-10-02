@@ -31,11 +31,10 @@ RAILS_ENV = "production"
 PORT = "443"
 
 # Database credential isolation (optional)
-# Each entry starts a local pooler at session start (pgbouncer for postgres,
-# ProxySQL for mysql); the wrapped child gets <env> pointing at 127.0.0.1
-# with a random per-session password. The real password never reaches the
-# child. Requires the pgbouncer / proxysql binaries on PATH (or *_path
-# overrides below).
+# Each entry opens a local relay at session start; the wrapped child gets
+# <env> pointing at 127.0.0.1 with a random per-session password. The real
+# password (op:// or literal) never reaches the child and never touches disk.
+# Works for postgres and mysql; no external binaries needed.
 #
 # [databases.mydb]
 # engine = "postgres"              # or "mysql"
@@ -44,8 +43,5 @@ PORT = "443"
 # user = "app_user"
 # password = "op://Private/mydb/password"   # op:// URI or literal
 # database = "appdb"
-# params = "sslmode=require"       # optional, engine-interpreted
+# params = "sslmode=require"       # optional: postgres sslmode / mysql use_ssl
 # env = "DATABASE_URL"             # env var injected into the wrapped child
-#
-# pgbouncer_path = "/usr/local/bin/pgbouncer"   # optional binary overrides
-# proxysql_path = "/usr/local/bin/proxysql"

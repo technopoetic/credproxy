@@ -13,22 +13,22 @@ import (
 // Client capability flags (MySQL protocol 4.1+). Only the ones the relay
 // actually negotiates are named.
 const (
-	capClientLongPassword      = 0x00000001
-	capClientFoundRows         = 0x00000002
-	capClientLongFlag          = 0x00000004
-	capClientConnectWithDB     = 0x00000008
-	capClientProtocol41        = 0x00000200
-	capClientSSL               = 0x00000800
-	capClientTransactions      = 0x00002000
-	capClientSecureConnection  = 0x00008000
-	capClientPluginAuth        = 0x00080000
-	capClientPluginAuthLenenc  = 0x00200000
+	capClientLongPassword     = 0x00000001
+	capClientFoundRows        = 0x00000002
+	capClientLongFlag         = 0x00000004
+	capClientConnectWithDB    = 0x00000008
+	capClientProtocol41       = 0x00000200
+	capClientSSL              = 0x00000800
+	capClientTransactions     = 0x00002000
+	capClientSecureConnection = 0x00008000
+	capClientPluginAuth       = 0x00080000
+	capClientPluginAuthLenenc = 0x00200000
 )
 
 const (
-	pluginNativePassword   = "mysql_native_password"
-	pluginCachingSha2      = "caching_sha2_password"
-	initialHandshakeProto  = 0x0a
+	pluginNativePassword  = "mysql_native_password"
+	pluginCachingSha2     = "caching_sha2_password"
+	initialHandshakeProto = 0x0a
 )
 
 // packetReader reads MySQL protocol packets: 3-byte little-endian length +

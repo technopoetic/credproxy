@@ -27,12 +27,12 @@ import (
 // Manager computes the child env vars and owns one listener per database
 // entry for the duration of the session.
 type Manager struct {
-	cfg     *config.Config
-	logger  *slog.Logger
-	listens map[string]net.Listener // entry name -> listener
-	ports   map[string]int          // entry name -> port
-	Env     map[string]string
-	Strip   []string
+	cfg      *config.Config
+	logger   *slog.Logger
+	listens  map[string]net.Listener // entry name -> listener
+	ports    map[string]int          // entry name -> port
+	Env      map[string]string
+	Strip    []string
 	stopOnce sync.Once
 }
 

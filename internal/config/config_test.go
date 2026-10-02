@@ -498,12 +498,12 @@ credential = "op://shipstops/Unsplash/key"
 }
 
 type stubResolver struct {
-	mu        sync.Mutex
-	resolved  map[string]string
-	err       map[string]error
-	delay     time.Duration
-	callCount int32
-	concurrent int32
+	mu            sync.Mutex
+	resolved      map[string]string
+	err           map[string]error
+	delay         time.Duration
+	callCount     int32
+	concurrent    int32
 	maxConcurrent int32
 }
 
@@ -700,7 +700,6 @@ func TestResolveEnvPerCallTimeout(t *testing.T) {
 	}
 }
 
-
 func TestLoadDatabases(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
 	tomlData := `
@@ -771,19 +770,10 @@ func TestMergeDatabasesProjectWinsPerEntry(t *testing.T) {
 	}
 }
 
-func TestMergeBinaryPathOverrides(t *testing.T) {
-	global := &Config{Env: map[string]string{}, Hosts: map[string]HostConfig{}, Profiles: map[string]ProfileConfig{}, PgbouncerPath: "/g/pgbouncer"}
-	overlay := &Config{Env: map[string]string{}, Hosts: map[string]HostConfig{}, Profiles: map[string]ProfileConfig{}, ProxySQLPath: "/p/proxysql"}
-	merged := global.Merge(overlay)
-	if merged.PgbouncerPath != "/g/pgbouncer" || merged.ProxySQLPath != "/p/proxysql" {
-		t.Fatalf("scalar path merge wrong: %+v", merged)
-	}
-}
-
 func TestApplyProfileDatabases(t *testing.T) {
 	cfg := &Config{
-		Env:       map[string]string{},
-		Hosts:     map[string]HostConfig{},
+		Env:   map[string]string{},
+		Hosts: map[string]HostConfig{},
 		Databases: map[string]DatabaseConfig{
 			"mydb": {Engine: "postgres", Host: "prod.example.com", Port: 5432, User: "u", Password: "p", Database: "d", Env: "DATABASE_URL"},
 		},
@@ -859,8 +849,8 @@ func TestValidateDatabasesRejectsReservedEnvNames(t *testing.T) {
 	for _, name := range []string{"PATH", "HTTPS_PROXY", "SSL_CERT_FILE", "CREDPROXY_TOKEN", "PGPASSWORD"} {
 		cfg := minimalValidDatabases()
 		db := cfg.Databases["mydb"]
-	db.Env = name
-	cfg.Databases["mydb"] = db
+		db.Env = name
+		cfg.Databases["mydb"] = db
 		if err := cfg.ValidateDatabases(); err == nil {
 			t.Fatalf("expected error for reserved env name %s", name)
 		}

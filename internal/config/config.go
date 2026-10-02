@@ -52,13 +52,11 @@ type DatabaseConfig struct {
 }
 
 type Config struct {
-	PgbouncerPath string                    `toml:"pgbouncer_path"`
-	ProxySQLPath  string                    `toml:"proxysql_path"`
-	Env           map[string]string         `toml:"env"`
-	Hosts         map[string]HostConfig     `toml:"hosts"`
-	Databases     map[string]DatabaseConfig `toml:"databases"`
-	Profiles      map[string]ProfileConfig  `toml:"profiles"`
-	hostsSet      map[string]bool
+	Env       map[string]string         `toml:"env"`
+	Hosts     map[string]HostConfig     `toml:"hosts"`
+	Databases map[string]DatabaseConfig `toml:"databases"`
+	Profiles  map[string]ProfileConfig  `toml:"profiles"`
+	hostsSet  map[string]bool
 }
 
 func Load(path string) (*Config, error) {
@@ -105,22 +103,13 @@ func (c *Config) SetDefaults() {
 	}
 }
 
-
 func (c *Config) Merge(overlay *Config) *Config {
 	merged := &Config{
-		PgbouncerPath: c.PgbouncerPath,
-		ProxySQLPath:  c.ProxySQLPath,
-		Env:           make(map[string]string, len(c.Env)+len(overlay.Env)),
-		Hosts:         make(map[string]HostConfig, len(c.Hosts)+len(overlay.Hosts)),
-		Databases:     make(map[string]DatabaseConfig, len(c.Databases)+len(overlay.Databases)),
-		Profiles:      make(map[string]ProfileConfig, len(c.Profiles)+len(overlay.Profiles)),
-		hostsSet:      make(map[string]bool, len(c.Hosts)+len(overlay.Hosts)),
-	}
-	if overlay.PgbouncerPath != "" {
-		merged.PgbouncerPath = overlay.PgbouncerPath
-	}
-	if overlay.ProxySQLPath != "" {
-		merged.ProxySQLPath = overlay.ProxySQLPath
+		Env:       make(map[string]string, len(c.Env)+len(overlay.Env)),
+		Hosts:     make(map[string]HostConfig, len(c.Hosts)+len(overlay.Hosts)),
+		Databases: make(map[string]DatabaseConfig, len(c.Databases)+len(overlay.Databases)),
+		Profiles:  make(map[string]ProfileConfig, len(c.Profiles)+len(overlay.Profiles)),
+		hostsSet:  make(map[string]bool, len(c.Hosts)+len(overlay.Hosts)),
 	}
 	for k, v := range c.Env {
 		merged.Env[k] = v
@@ -148,7 +137,7 @@ func (c *Config) Merge(overlay *Config) *Config {
 	for name, p := range c.Profiles {
 		merged.Profiles[name] = p
 	}
-		for name, p := range overlay.Profiles {
+	for name, p := range overlay.Profiles {
 		if existing, ok := merged.Profiles[name]; ok {
 			ep := ProfileConfig{
 				Hosts:     make(map[string]HostConfig, len(existing.Hosts)+len(p.Hosts)),
@@ -290,13 +279,11 @@ func (c *Config) ApplyProfile(name string) (*Config, error) {
 		return nil, fmt.Errorf("profile %q not found; available: %v", name, c.ProfileNames())
 	}
 	result := &Config{
-		PgbouncerPath: c.PgbouncerPath,
-		ProxySQLPath:  c.ProxySQLPath,
-		Env:           make(map[string]string, len(c.Env)+len(profile.Env)),
-		Hosts:         make(map[string]HostConfig, len(c.Hosts)+len(profile.Hosts)),
-		Databases:     make(map[string]DatabaseConfig, len(c.Databases)+len(profile.Databases)),
-		Profiles:      c.Profiles,
-		hostsSet:      make(map[string]bool, len(c.Hosts)+len(profile.Hosts)),
+		Env:       make(map[string]string, len(c.Env)+len(profile.Env)),
+		Hosts:     make(map[string]HostConfig, len(c.Hosts)+len(profile.Hosts)),
+		Databases: make(map[string]DatabaseConfig, len(c.Databases)+len(profile.Databases)),
+		Profiles:  c.Profiles,
+		hostsSet:  make(map[string]bool, len(c.Hosts)+len(profile.Hosts)),
 	}
 	for k, v := range c.Env {
 		result.Env[k] = v

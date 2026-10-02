@@ -83,7 +83,7 @@ func FrontendAuth(conn net.Conn, sessionPassword string) error {
 	hs = append(hs, 45)                        // charset utf8mb4
 	hs = append(hs, 2, 0)                      // status flags
 	hs = append(hs, byte(caps>>16), byte(caps>>24))
-	hs = append(hs, 21) // auth-plugin-data length (12 bytes part-2 + NUL)
+	hs = append(hs, 21)                  // auth-plugin-data length (12 bytes part-2 + NUL)
 	hs = append(hs, make([]byte, 10)...) // reserved (all zeros) — required by the protocol
 	hs = append(hs, scramble[8:20]...)
 	hs = append(hs, 0) // part-2 NUL terminator — the field is 13 bytes
