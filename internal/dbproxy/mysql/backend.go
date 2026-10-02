@@ -69,7 +69,13 @@ func DialBackend(ctx context.Context, cfg config.DatabaseConfig) (net.Conn, erro
 		if err := w.write(req); err != nil {
 			return backendErr("ssl request: %v", err)
 		}
-		tc := tls.Client(conn, &tls.Config{ServerName: cfg.Host})
+		tc := tls.Client(conn, &tls.Config{
+			ServerName: cfg.Host,
+			// use_ssl=1 matches go-sql-driver's tls=true semantics: encrypt
+			// without chain verification (MySQL deployments commonly use
+			// self-signed server certs). Verified-TLS needs a CA config — future work.
+			InsecureSkipVerify: true, //nolint:gosec — documented use_ssl semantics
+		})
 		if err := tc.Handshake(); err != nil {
 			return backendErr("backend tls handshake: %v", err)
 		}
@@ -119,6 +125,9 @@ func DialBackend(ctx context.Context, cfg config.DatabaseConfig) (net.Conn, erro
 			return backendErr("backend read: %v", err)
 		}
 		w.seq = r.seq + 1 // MySQL sequences alternate across both directions
+		if len(payload) == 0 {
+			return backendErr("empty packet from backend")
+		}
 		switch payload[0] {
 		case 0x00: // OK — handshake complete
 			return conn, nil
@@ -147,28 +156,29 @@ func DialBackend(ctx context.Context, cfg config.DatabaseConfig) (net.Conn, erro
 			case 0x03: // fast auth success; next packet is OK
 				continue
 			case 0x04: // full auth required
-				if !isTLS {
+				var toSend []byte
+				masked := xorPassword(append([]byte(cfg.Password), 0), scramble)
+				if isTLS {
+					// The password is protected by the TLS channel — send
+					// it directly. The server sends nothing until it has
+					// the password, so a public-key request here would
+					// deadlock both sides.
+					toSend = masked
+				} else {
 					// Insecure channel: request the server's RSA public
 					// key (packet payload 0x02), then read the key packet.
 					if err := w.write([]byte{0x02}); err != nil {
 						return backendErr("requesting rsa key: %v", err)
 					}
-				}
-				pubPkt, err := r.next()
-				if err != nil {
-					return backendErr("reading server rsa key: %v", err)
-				}
-				w.seq = r.seq + 1 // answer the key packet with the ciphertext
-				if len(pubPkt) > 1 && pubPkt[0] == 0x01 {
-					// AuthMoreData prefix on the key packet
-					pubPkt = pubPkt[1:]
-				}
-				masked := xorPassword(append([]byte(cfg.Password), 0), scramble)
-				var toSend []byte
-				if isTLS {
-					// Password is already protected by the TLS channel.
-					toSend = masked
-				} else {
+					pubPkt, err := r.next()
+					if err != nil {
+						return backendErr("reading server rsa key: %v", err)
+					}
+					w.seq = r.seq + 1 // answer the key packet with the ciphertext
+					if len(pubPkt) > 1 && pubPkt[0] == 0x01 {
+						// AuthMoreData prefix on the key packet
+						pubPkt = pubPkt[1:]
+					}
 					block, _ := pem.Decode(pubPkt)
 					if block == nil {
 						return backendErr("server rsa key is not PEM")

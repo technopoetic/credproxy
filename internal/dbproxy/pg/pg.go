@@ -24,6 +24,11 @@ const (
 	protocolVersion3  = 196608
 )
 
+// maxMessageSize caps pre-auth message allocation. Real auth-phase messages
+// are tiny; a forged header claiming gigabytes must be rejected, not
+// allocated (a local unauthenticated process could otherwise OOM credproxy).
+const maxMessageSize = 1 << 20
+
 // readMessage reads one typed message: 1-byte type, int32 length (inclusive
 // of itself, exclusive of the type byte), body. It returns the type, body,
 // and the complete raw frame (for lossless forwarding).
@@ -35,6 +40,9 @@ func readMessage(conn net.Conn) (typ byte, body []byte, raw []byte, err error) {
 	n := int(head[1])<<24 | int(head[2])<<16 | int(head[3])<<8 | int(head[4])
 	if n < 4 {
 		return 0, nil, nil, fmt.Errorf("absurd message length %d", n)
+	}
+	if n > maxMessageSize {
+		return 0, nil, nil, fmt.Errorf("message length %d exceeds %d", n, maxMessageSize)
 	}
 	body = make([]byte, n-4)
 	if _, err = readFull(conn, body); err != nil {

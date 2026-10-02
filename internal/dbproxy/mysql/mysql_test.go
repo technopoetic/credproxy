@@ -6,10 +6,13 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha1" //nolint:gosec — mysql_native_password is SHA-1 by protocol definition
+	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/binary"
 	"encoding/pem"
 	"errors"
+	"math/big"
 	"net"
 	"testing"
 	"time"
@@ -134,7 +137,7 @@ func buildInitialHandshake(scramble []byte, plugin string, caps uint32) []byte {
 	p = append(p, 45)   // charset
 	p = append(p, 2, 0) // status
 	p = append(p, byte(caps>>16), byte(caps>>24))
-	p = append(p, 21) // auth-plugin-data len (12 bytes part-2 + NUL)
+	p = append(p, 21)                  // auth-plugin-data len (12 bytes part-2 + NUL)
 	p = append(p, make([]byte, 10)...) // reserved (all zeros)
 	p = append(p, scramble[8:20]...)
 	p = append(p, 0) // part-2 NUL terminator — the field is 13 bytes
@@ -523,5 +526,120 @@ func TestBackendServerSendsERR(t *testing.T) {
 
 	if _, err := DialBackend(context.Background(), cfg); err == nil {
 		t.Fatal("expected error on backend ERR packet")
+	}
+}
+
+// TestBackendCachingSha2FullAuthOverTLS pins the use_ssl=1 + caching_sha2
+// full-auth path: the relay must send the masked password directly over the
+// TLS channel (no public-key request — the server sends nothing until it
+// gets the password, so reading one deadlocks both sides).
+func TestBackendCachingSha2FullAuthOverTLS(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	cfg := testDBConfig()
+	cfg.Params = "use_ssl=1"
+	if p, ok := ln.Addr().(*net.TCPAddr); ok {
+		cfg.Port = p.Port
+	}
+	cert := selfSignedTLSCert(t)
+	backendErr := make(chan error, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		conn.SetDeadline(time.Now().Add(5 * time.Second))
+		var seq byte
+		_ = writePacket(conn, &seq, buildInitialHandshake(fixedScramble, "caching_sha2_password", serverCaps|capClientSSL))
+		// relay's SSL request
+		if _, err := readPacketErr(conn); err != nil {
+			backendErr <- err
+			return
+		}
+		tc := tls.Server(conn, &tls.Config{Certificates: []tls.Certificate{cert}})
+		if err := tc.Handshake(); err != nil {
+			backendErr <- err
+			return
+		}
+		// handshake response inside TLS
+		if _, err := readPacketErr(tc); err != nil {
+			backendErr <- err
+			return
+		}
+		// full auth demanded — over TLS the relay must send the masked
+		// password WITHOUT requesting a public key (requesting one
+		// deadlocks: the server sends nothing until it has the password)
+		_ = writePacket(tc, &seq, []byte{0x01, 0x04})
+		masked, err := readPacketErr(tc)
+		if err != nil {
+			backendErr <- errors.New("no password received over TLS (deadlock): " + err.Error())
+			return
+		}
+		want := xorPassword(append([]byte("REALPW"), 0), fixedScramble)
+		if !bytes.Equal(masked, want) {
+			backendErr <- errors.New("masked password mismatch over TLS")
+			return
+		}
+		_ = writePacket(tc, &seq, []byte{0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00})
+		backendErr <- nil
+	}()
+
+	conn, err := DialBackend(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("DialBackend: %v", err)
+	}
+	if be := <-backendErr; be != nil {
+		t.Fatalf("fake backend: %v", be)
+	}
+	conn.Close()
+}
+
+func selfSignedTLSCert(t *testing.T) tls.Certificate {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "127.0.0.1"}}
+	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
+}
+
+// TestBackendEmptyPacketDoesNotPanic pins bounds safety: a zero-length
+// packet from a misbehaving backend must fail the connection, not crash
+// credproxy with an index-out-of-range.
+func TestBackendEmptyPacketDoesNotPanic(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	cfg := testDBConfig()
+	if p, ok := ln.Addr().(*net.TCPAddr); ok {
+		cfg.Port = p.Port
+	}
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		conn.SetDeadline(time.Now().Add(5 * time.Second))
+		var seq byte
+		_ = writePacket(conn, &seq, buildInitialHandshake(fixedScramble, "mysql_native_password", serverCaps))
+		_, _ = readPacketErr(conn)
+		_ = writePacket(conn, &seq, []byte{}) // empty packet — must not panic
+		time.Sleep(200 * time.Millisecond)
+	}()
+
+	if _, err := DialBackend(context.Background(), cfg); err == nil {
+		t.Fatal("expected error on empty backend packet")
 	}
 }

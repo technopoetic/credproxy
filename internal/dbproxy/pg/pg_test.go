@@ -487,3 +487,37 @@ func sha256Sum(b []byte) []byte {
 	s := sha256.Sum256(b)
 	return s[:]
 }
+
+// TestFrontendAuthHugeLengthRejected pins pre-auth bounds safety: a forged
+// header claiming a ~2GB message must be rejected immediately, not
+// allocated (a local unauthenticated process could otherwise OOM credproxy).
+func TestFrontendAuthHugeLengthRejected(t *testing.T) {
+	server, client := net.Pipe()
+	defer client.Close()
+	errCh := make(chan error, 1)
+	go func() {
+		server.SetDeadline(time.Now().Add(5 * time.Second))
+		_, err := FrontendAuth(server, "sesspw")
+		errCh <- err
+	}()
+	pgSendStartup(t, client, "app_user", "mydb", nil)
+	// wait for the cleartext auth request, then forge a huge PasswordMessage
+	typ, body := pgReadMsg(t, client)
+	if typ != 'R' || binary.BigEndian.Uint32(body) != 3 {
+		t.Fatalf("expected cleartext auth request, got %c", typ)
+	}
+	huge := make([]byte, 5)
+	huge[0] = 'p'                               // PasswordMessage type
+	binary.BigEndian.PutUint32(huge[1:], 2<<30) // ~2GB claimed length
+	if _, err := client.Write(huge); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("expected error on absurd length")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("FrontendAuth still allocating/blocked on absurd length")
+	}
+}
