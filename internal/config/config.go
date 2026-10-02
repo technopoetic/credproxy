@@ -329,7 +329,7 @@ func (c *Config) AllowAll() {
 // child env. A database env var with one of these names would fight the
 // proxy's own wiring, so it is rejected at validation time.
 var reservedEnvNames = map[string]bool{
-	"PATH": true, "HOME": true, "BASH_ENV": true,
+	"PATH": true, "HOME": true, "BASH_ENV": true, "CREDPROXY_PREV_BASH_ENV": true,
 	"HTTPS_PROXY": true, "HTTP_PROXY": true, "https_proxy": true, "http_proxy": true,
 	"NO_PROXY": true, "no_proxy": true,
 	"SSL_CERT_FILE": true, "REQUESTS_CA_BUNDLE": true, "NODE_EXTRA_CA_CERTS": true,
@@ -339,15 +339,11 @@ var reservedEnvNames = map[string]bool{
 
 // ValidateDatabases checks every [databases.*] entry: known engine, required
 // fields present, port in range, unique env var names, no reserved env var
-// names, unique mysql usernames (ProxySQL routes per username, so two mysql
-// entries sharing one cannot both work), and no whitespace in the fields
-// pgbouncer interpolates into its space-separated [databases] line (an
-// op://-resolved password with a space would split that line). All problems
-// are reported in one joined error.
+// names, no whitespace in the host (a network address), and engine-valid
+// params. All problems are reported in one joined error.
 func (c *Config) ValidateDatabases() error {
 	var errs []error
 	seenEnv := make(map[string]string, len(c.Databases))
-	seenMySQLUser := make(map[string]string, len(c.Databases))
 	for name, db := range c.Databases {
 		if db.Engine != "postgres" && db.Engine != "mysql" {
 			errs = append(errs, fmt.Errorf("database %q: engine must be \"postgres\" or \"mysql\", got %q", name, db.Engine))
@@ -373,27 +369,44 @@ func (c *Config) ValidateDatabases() error {
 			errs = append(errs, fmt.Errorf("database %q: env var %q already used by database %q", name, db.Env, prev))
 		}
 		seenEnv[db.Env] = name
-		if db.Engine == "mysql" {
-			if prev, ok := seenMySQLUser[db.User]; ok {
-				errs = append(errs, fmt.Errorf("database %q: mysql username %q already used by database %q — ProxySQL routes per username and cannot serve two mysql entries with the same one", name, db.User, prev))
-			}
-			seenMySQLUser[db.User] = name
+		if strings.ContainsFunc(db.Host, func(r rune) bool { return r <= ' ' || r == 0x7f }) {
+			errs = append(errs, fmt.Errorf("database %q: host must not contain whitespace or control characters", name))
 		}
-		// pgbouncer interpolates these into a space-separated [databases]
-		// line; whitespace or control characters would corrupt the config.
-		// ProxySQL passwords are SQL literals and tolerate spaces, so the
-		// password check applies to postgres entries only.
-		whitespaceFields := map[string]string{"host": db.Host, "user": db.User, "database": db.Database}
-		if db.Engine == "postgres" {
-			whitespaceFields["password"] = db.Password
-		}
-		for field, val := range whitespaceFields {
-			if strings.ContainsFunc(val, func(r rune) bool { return r <= ' ' || r == 0x7f }) {
-				errs = append(errs, fmt.Errorf("database %q: %s must not contain whitespace or control characters", name, field))
-			}
+		if err := validateParams(db.Engine, db.Params); err != nil {
+			errs = append(errs, fmt.Errorf("database %q: %v", name, err))
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// validateParams checks the engine-interpreted backend params: postgres
+// takes a backend sslmode, mysql takes use_ssl.
+func validateParams(engine, params string) error {
+	if params == "" {
+		return nil
+	}
+	for _, kv := range strings.Split(params, ",") {
+		parts := strings.SplitN(strings.TrimSpace(kv), "=", 2)
+		if len(parts) != 2 {
+			return fmt.Errorf("params %q is not key=value", params)
+		}
+		key, val := parts[0], parts[1]
+		switch {
+		case engine == "postgres" && key == "sslmode":
+			switch val {
+			case "disable", "prefer", "require", "verify-full":
+			default:
+				return fmt.Errorf("sslmode %q must be disable, prefer, require, or verify-full", val)
+			}
+		case engine == "mysql" && key == "use_ssl":
+			if val != "0" && val != "1" {
+				return fmt.Errorf("use_ssl %q must be 0 or 1", val)
+			}
+		default:
+			return fmt.Errorf("param %q is not supported for engine %q", key, engine)
+		}
+	}
+	return nil
 }
 
 func WalkProjectConfig(cwd, stopAt string) (string, error) {

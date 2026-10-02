@@ -16,7 +16,7 @@ import (
 	"github.com/technopoetic/credproxy/internal/ca"
 	"github.com/technopoetic/credproxy/internal/config"
 	"github.com/technopoetic/credproxy/internal/mitm"
-	"github.com/technopoetic/credproxy/internal/pooler"
+	"github.com/technopoetic/credproxy/internal/dbrelay"
 	"github.com/technopoetic/credproxy/internal/providers"
 	"github.com/technopoetic/credproxy/internal/resolver"
 )
@@ -153,11 +153,11 @@ func runWrap(cfg *config.Config, caProvider *ca.Provider, res *resolver.Resolver
 
 	go srv.Serve(ln)
 
-	// Poolers start before the child exists so the injected URLs are known.
+	// Relays start before the child exists so the injected URLs are known.
 	// Start is a no-op when no [databases.*] are configured.
-	mgr := pooler.NewManager(cfg, logger, logFile)
+	mgr := dbrelay.NewManager(cfg, logger)
 	if err := mgr.Start(context.Background()); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to start database poolers: %v\n", err)
+		fmt.Fprintf(os.Stderr, "failed to start database relays: %v\n", err)
 		return 1
 	}
 	defer mgr.Stop()

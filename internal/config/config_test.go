@@ -910,47 +910,73 @@ func TestMergeProfilesMergeDatabases(t *testing.T) {
 	}
 }
 
-func TestValidateDatabasesRejectsDuplicateMySQLUsernames(t *testing.T) {
+func TestValidateDatabasesAllowsSharedUsernames(t *testing.T) {
+	// The embedded relay dials each entry's backend directly — there is no
+	// per-username routing constraint (the old ProxySQL rule is gone).
 	cfg := minimalValidDatabases()
 	cfg.Databases["mdb"] = DatabaseConfig{Engine: "mysql", Host: "h", Port: 3306, User: "mu", Password: "p", Database: "d", Env: "OTHER_URL"}
 	cfg.Databases["mdb2"] = DatabaseConfig{Engine: "mysql", Host: "h2", Port: 3306, User: "mu", Password: "p2", Database: "d2", Env: "THIRD_URL"}
-	err := cfg.ValidateDatabases()
-	if err == nil || !strings.Contains(err.Error(), "mdb2") {
-		t.Fatalf("expected duplicate-mysql-username error naming the colliding entry: %v", err)
-	}
-}
-
-func TestValidateDatabasesAllowsDuplicatePostgresUsernames(t *testing.T) {
-	// postgres aliases per entry, so shared usernames are fine — only the
-	// ProxySQL routing model (per-username default_hostgroup) breaks.
-	cfg := minimalValidDatabases()
 	cfg.Databases["pg2"] = DatabaseConfig{Engine: "postgres", Host: "h2", Port: 5432, User: "u", Password: "p2", Database: "d2", Env: "PG2_URL"}
 	if err := cfg.ValidateDatabases(); err != nil {
-		t.Fatalf("duplicate postgres usernames must validate: %v", err)
+		t.Fatalf("shared usernames must validate: %v", err)
 	}
 }
 
-func TestValidateDatabasesRejectsWhitespaceInPgbouncerFields(t *testing.T) {
+func TestValidateDatabasesRejectsWhitespaceInHost(t *testing.T) {
+	// Only the host is format-constrained now: it is a network address.
+	// Passwords and usernames flow through URL percent-encoding and
+	// binary-safe auth protocols, so spaces in them are fine.
 	cfg := minimalValidDatabases()
 	db := cfg.Databases["mydb"]
-	db.Password = "pass with space"
+	db.Host = "host with space"
 	cfg.Databases["mydb"] = db
-	err := cfg.ValidateDatabases()
-	if err == nil {
-		t.Fatal("expected whitespace-in-password error (the pgbouncer [databases] line would split)")
+	if err := cfg.ValidateDatabases(); err == nil {
+		t.Fatal("expected whitespace-in-host error")
 	}
 	cfg2 := minimalValidDatabases()
 	db2 := cfg2.Databases["mydb"]
-	db2.Host = "host with space"
+	db2.Password = "pass with space"
 	cfg2.Databases["mydb"] = db2
-	if err := cfg2.ValidateDatabases(); err == nil {
-		t.Fatal("expected whitespace-in-host error")
+	if err := cfg2.ValidateDatabases(); err != nil {
+		t.Fatalf("password with space must validate: %v", err)
 	}
-	// mysql passwords are SQL literals and tolerate spaces — must NOT error
+}
+
+func TestValidateDatabasesParams(t *testing.T) {
+	cfg := minimalValidDatabases()
+	db := cfg.Databases["mydb"]
+	db.Params = "sslmode=bogus"
+	cfg.Databases["mydb"] = db
+	if err := cfg.ValidateDatabases(); err == nil {
+		t.Fatal("expected invalid sslmode error")
+	}
+	cfg2 := minimalValidDatabases()
+	db2 := cfg2.Databases["mydb"]
+	db2.Params = "sslmode=require"
+	cfg2.Databases["mydb"] = db2
+	if err := cfg2.ValidateDatabases(); err != nil {
+		t.Fatalf("valid sslmode must pass: %v", err)
+	}
 	cfg3 := minimalValidDatabases()
-	db3 := DatabaseConfig{Engine: "mysql", Host: "h", Port: 3306, User: "mu", Password: "pass with space", Database: "d", Env: "MYSQL_URL"}
+	db3 := DatabaseConfig{Engine: "mysql", Host: "h", Port: 3306, User: "mu", Password: "p", Database: "d", Params: "use_ssl=2", Env: "MYSQL_URL"}
 	cfg3.Databases["mydb"] = db3
-	if err := cfg3.ValidateDatabases(); err != nil {
-		t.Fatalf("mysql password with space must validate: %v", err)
+	if err := cfg3.ValidateDatabases(); err == nil {
+		t.Fatal("expected invalid use_ssl error")
+	}
+	cfg4 := minimalValidDatabases()
+	db4 := DatabaseConfig{Engine: "mysql", Host: "h", Port: 3306, User: "mu", Password: "p", Database: "d", Params: "use_ssl=1", Env: "MYSQL_URL"}
+	cfg4.Databases["mydb"] = db4
+	if err := cfg4.ValidateDatabases(); err != nil {
+		t.Fatalf("valid use_ssl must pass: %v", err)
+	}
+}
+
+func TestValidateDatabasesRejectsPrevBashEnv(t *testing.T) {
+	cfg := minimalValidDatabases()
+	db := cfg.Databases["mydb"]
+	db.Env = "CREDPROXY_PREV_BASH_ENV"
+	cfg.Databases["mydb"] = db
+	if err := cfg.ValidateDatabases(); err == nil {
+		t.Fatal("expected reserved-env error for CREDPROXY_PREV_BASH_ENV")
 	}
 }
