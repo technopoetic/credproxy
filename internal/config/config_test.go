@@ -970,3 +970,42 @@ func TestValidateDatabasesRejectsPrevBashEnv(t *testing.T) {
 		t.Fatal("expected reserved-env error for CREDPROXY_PREV_BASH_ENV")
 	}
 }
+
+func TestValidateDatabasesMySQLSslmodeAlias(t *testing.T) {
+	// Users reach for sslmode on mysql entries (MySQL's own vocabulary).
+	// Accept it: disabled → no TLS; required/verify_* → backend TLS;
+	// preferred → rejected (it would silently downgrade).
+	cases := []struct {
+		sslmode string
+		wantErr bool
+	}{
+		{"required", false},
+		{"disabled", false},
+		{"verify_ca", false},
+		{"verify_identity", false},
+		{"REQUIRED", false},
+		{"preferred", true},
+		{"bogus", true},
+	}
+	for _, c := range cases {
+		cfg := minimalValidDatabases()
+		db := DatabaseConfig{Engine: "mysql", Host: "h", Port: 3306, User: "mu", Password: "p", Database: "d", Params: "sslmode=" + c.sslmode, Env: "MYSQL_URL"}
+		cfg.Databases["mydb"] = db
+		err := cfg.ValidateDatabases()
+		if c.wantErr && err == nil {
+			t.Errorf("sslmode=%q: expected error", c.sslmode)
+		}
+		if !c.wantErr && err != nil {
+			t.Errorf("sslmode=%q: unexpected error: %v", c.sslmode, err)
+		}
+	}
+}
+
+func TestValidateDatabasesMySQLParamConflict(t *testing.T) {
+	cfg := minimalValidDatabases()
+	db := DatabaseConfig{Engine: "mysql", Host: "h", Port: 3306, User: "mu", Password: "p", Database: "d", Params: "use_ssl=1,sslmode=required", Env: "MYSQL_URL"}
+	cfg.Databases["mydb"] = db
+	if err := cfg.ValidateDatabases(); err == nil {
+		t.Fatal("expected error when use_ssl and sslmode are both set")
+	}
+}

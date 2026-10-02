@@ -235,7 +235,7 @@ port = 5432
 user = "app_user"
 password = "op://Private/mydb/password"
 database = "appdb"
-params = "sslmode=require"       # optional: postgres sslmode / mysql use_ssl
+params = "sslmode=require"       # optional backend TLS: sslmode (both engines) or mysql use_ssl
 env = "DATABASE_URL"
 ```
 

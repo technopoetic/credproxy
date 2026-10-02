@@ -367,11 +367,15 @@ func (c *Config) ValidateDatabases() error {
 }
 
 // validateParams checks the engine-interpreted backend params: postgres
-// takes a backend sslmode, mysql takes use_ssl.
+// takes a backend sslmode; mysql takes use_ssl or sslmode (MySQL's own
+// vocabulary — sslmode=required/verify_* enable backend TLS, disabled
+// disables it; "preferred" is rejected because the relay cannot try-then-
+// fall back, and silently downgrading a TLS request would be worse).
 func validateParams(engine, params string) error {
 	if params == "" {
 		return nil
 	}
+	seen := make(map[string]string)
 	for _, kv := range strings.Split(params, ",") {
 		parts := strings.SplitN(strings.TrimSpace(kv), "=", 2)
 		if len(parts) != 2 {
@@ -385,12 +389,29 @@ func validateParams(engine, params string) error {
 			default:
 				return fmt.Errorf("sslmode %q must be disable, prefer, require, or verify-full", val)
 			}
+			seen[key] = val
+		case engine == "mysql" && key == "sslmode":
+			switch strings.ToLower(val) {
+			case "disabled":
+				seen[key] = "0"
+			case "required", "verify_ca", "verify_identity":
+				seen[key] = "1"
+			default:
+				return fmt.Errorf("mysql sslmode %q must be disabled, required, verify_ca, or verify_identity (\"preferred\" would silently downgrade TLS)", val)
+			}
+			seen[key] = val
 		case engine == "mysql" && key == "use_ssl":
 			if val != "0" && val != "1" {
 				return fmt.Errorf("use_ssl %q must be 0 or 1", val)
 			}
+			seen[key] = val
 		default:
 			return fmt.Errorf("param %q is not supported for engine %q", key, engine)
+		}
+	}
+	if _, hasSSL := seen["sslmode"]; hasSSL {
+		if _, hasUseSSL := seen["use_ssl"]; hasUseSSL {
+			return fmt.Errorf("use_ssl and sslmode are the same setting — set only one")
 		}
 	}
 	return nil

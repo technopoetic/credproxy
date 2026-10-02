@@ -71,7 +71,8 @@ Explicitly OUT of scope (deferred, not forgotten):
 | Engine | Param | Values | Default |
 |---|---|---|---|
 | postgres | `sslmode` | `disable`, `prefer`, `require`, `verify-full` | `prefer` (attempt TLS, allow fallback) |
-| mysql | `use_ssl` | `0`, `1` | `0` |
+| mysql | `sslmode` | `disabled`, `required`, `verify_ca`, `verify_identity` | (no TLS) |
+| mysql | `use_ssl` | `0`, `1` (legacy alias for sslmode) | `0` |
 
 ### Injected URL shape
 

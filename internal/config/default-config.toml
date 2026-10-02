@@ -43,5 +43,5 @@ PORT = "443"
 # user = "app_user"
 # password = "op://Private/mydb/password"   # op:// URI or literal
 # database = "appdb"
-# params = "sslmode=require"       # optional: postgres sslmode / mysql use_ssl
+# params = "sslmode=require"       # optional backend TLS (both engines)
 # env = "DATABASE_URL"             # env var injected into the wrapped child

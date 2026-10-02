@@ -13,9 +13,29 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 
 	"github.com/technopoetic/credproxy/internal/config"
 )
+
+// useSSLFromParams decides backend TLS from the entry's params. Validation
+// has already constrained the vocabulary: use_ssl=0/1, or sslmode where
+// disabled→no TLS and required/verify_*→TLS.
+func useSSLFromParams(params string) bool {
+	for _, kv := range strings.Split(params, ",") {
+		parts := strings.SplitN(strings.TrimSpace(kv), "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		switch strings.ToLower(parts[0]) {
+		case "use_ssl":
+			return parts[1] == "1"
+		case "sslmode":
+			return strings.ToLower(parts[1]) != "disabled"
+		}
+	}
+	return false
+}
 
 // DialBackend connects to the configured MySQL server and authenticates with
 // the real credential. The returned connection is positioned right after the
@@ -23,7 +43,7 @@ import (
 // crosses a non-TLS socket in plaintext: native and caching_sha2 fast-auth
 // are nonce-bound tokens; caching_sha2 full auth is RSA-OAEP encrypted.
 func DialBackend(ctx context.Context, cfg config.DatabaseConfig) (net.Conn, error) {
-	useSSL := cfg.Params == "use_ssl=1"
+	useSSL := useSSLFromParams(cfg.Params)
 
 	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
 	var d net.Dialer
