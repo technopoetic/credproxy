@@ -223,6 +223,28 @@ Resolution is concurrent (one `op read` per env var, all running in parallel) wi
 
 Final child env = parent env ∪ global `[env]` ∪ profile `[profiles.<name>.env]`. Profile wins on conflict. Proxy-injected vars (`HTTPS_PROXY`, `NO_PROXY`, `PATH`, CA cert vars, `CREDPROXY_TOKEN`) always override config env vars.
 
+## Database Credential Isolation
+
+`[databases.*]` entries keep real database passwords out of the wrapped process. At session start credproxy opens a local relay per database — it authenticates the child with a random per-session password, opens the backend connection with the real credential (resolved from `op://` at startup, like host credentials), and relays bytes transparently. The child receives a localhost-only connection string via the env var you name in `env`:
+
+```toml
+[databases.mydb]
+engine = "postgres"              # or "mysql"
+host = "db.example.com"
+port = 5432
+user = "app_user"
+password = "op://Private/mydb/password"
+database = "appdb"
+params = "sslmode=require"       # optional backend TLS: sslmode (both engines) or mysql use_ssl
+env = "DATABASE_URL"
+```
+
+The child sees `DATABASE_URL=postgres://app_user:<random>@127.0.0.1:<port>/mydb?sslmode=disable` and every driver/ORM works unchanged — prepared statements included, because the relay never interprets post-auth traffic. No sentinel convention to learn. Inherited `DATABASE_URL`, `PGPASSWORD`, and `MYSQL_PWD` are stripped from the child env, so a real connection string in your shell cannot silently bypass the relay. This is the safe alternative to putting a resolved `DATABASE_URL` in `[env]` (see the security caveat above).
+
+**Security property:** the real password exists only inside credproxy's memory — never in the child env, never on disk. The child's session password is random, valid only against the local relay, and dies with the session. Supported backend auth: Postgres SCRAM-SHA-256 / md5 / cleartext-over-TLS; MySQL caching_sha2 (fast-auth, and full-auth with RSA key exchange) and mysql_native_password.
+
+**Requirements: none beyond credproxy itself.** No pooler binaries, no containers.
+
 ## Agent Instructions
 
 Add the following block to your `AGENTS.md` or project instructions:

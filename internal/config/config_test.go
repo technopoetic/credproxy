@@ -498,12 +498,12 @@ credential = "op://shipstops/Unsplash/key"
 }
 
 type stubResolver struct {
-	mu        sync.Mutex
-	resolved  map[string]string
-	err       map[string]error
-	delay     time.Duration
-	callCount int32
-	concurrent int32
+	mu            sync.Mutex
+	resolved      map[string]string
+	err           map[string]error
+	delay         time.Duration
+	callCount     int32
+	concurrent    int32
 	maxConcurrent int32
 }
 
@@ -700,3 +700,314 @@ func TestResolveEnvPerCallTimeout(t *testing.T) {
 	}
 }
 
+func TestLoadDatabases(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	tomlData := `
+[databases.mydb]
+engine = "postgres"
+host = "db.example.com"
+port = 5432
+user = "app_user"
+password = "op://Private/mydb/password"
+database = "appdb"
+params = "sslmode=require"
+env = "DATABASE_URL"
+
+[databases.other]
+engine = "mysql"
+host = "mysql.example.com"
+port = 3306
+user = "mu"
+password = "literal"
+database = "mdb"
+env = "OTHER_DB_URL"
+`
+	if err := os.WriteFile(path, []byte(tomlData), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Databases) != 2 {
+		t.Fatalf("expected 2 databases, got %d", len(cfg.Databases))
+	}
+	db := cfg.Databases["mydb"]
+	if db.Engine != "postgres" || db.Host != "db.example.com" || db.Port != 5432 ||
+		db.User != "app_user" || db.Password != "op://Private/mydb/password" ||
+		db.Database != "appdb" || db.Params != "sslmode=require" || db.Env != "DATABASE_URL" {
+		t.Fatalf("mydb parsed wrong: %+v", db)
+	}
+	if cfg.Databases["other"].Engine != "mysql" {
+		t.Fatalf("other parsed wrong: %+v", cfg.Databases["other"])
+	}
+}
+
+func TestMergeDatabasesProjectWinsPerEntry(t *testing.T) {
+	global := &Config{
+		Env:      map[string]string{},
+		Hosts:    map[string]HostConfig{},
+		Profiles: map[string]ProfileConfig{},
+		Databases: map[string]DatabaseConfig{
+			"mydb":  {Engine: "postgres", Host: "global.example.com", Port: 5432, User: "u", Password: "p", Database: "d", Env: "DATABASE_URL"},
+			"gonly": {Engine: "postgres", Host: "g.example.com", Port: 5432, User: "u", Password: "p", Database: "d", Env: "G_URL"},
+		},
+	}
+	overlay := &Config{
+		Env:      map[string]string{},
+		Hosts:    map[string]HostConfig{},
+		Profiles: map[string]ProfileConfig{},
+		Databases: map[string]DatabaseConfig{
+			"mydb": {Engine: "postgres", Host: "project.example.com", Port: 5433, User: "u2", Password: "p2", Database: "d2", Env: "DATABASE_URL"},
+		},
+	}
+	merged := global.Merge(overlay)
+	if merged.Databases["mydb"].Host != "project.example.com" {
+		t.Fatalf("overlay entry should win wholesale: %+v", merged.Databases["mydb"])
+	}
+	if _, ok := merged.Databases["gonly"]; !ok {
+		t.Fatal("global-only entry must survive merge")
+	}
+}
+
+func TestApplyProfileDatabases(t *testing.T) {
+	cfg := &Config{
+		Env:   map[string]string{},
+		Hosts: map[string]HostConfig{},
+		Databases: map[string]DatabaseConfig{
+			"mydb": {Engine: "postgres", Host: "prod.example.com", Port: 5432, User: "u", Password: "p", Database: "d", Env: "DATABASE_URL"},
+		},
+		Profiles: map[string]ProfileConfig{
+			"staging": {Hosts: map[string]HostConfig{}, Env: map[string]string{}, Databases: map[string]DatabaseConfig{
+				"mydb": {Engine: "postgres", Host: "staging.example.com", Port: 5432, User: "u", Password: "p", Database: "d", Env: "DATABASE_URL"},
+			}},
+		},
+	}
+	applied, err := cfg.ApplyProfile("staging")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied.Databases["mydb"].Host != "staging.example.com" {
+		t.Fatalf("profile databases should overlay: %+v", applied.Databases["mydb"])
+	}
+}
+
+func minimalValidDatabases() *Config {
+	return &Config{
+		Databases: map[string]DatabaseConfig{
+			"mydb": {Engine: "postgres", Host: "h", Port: 5432, User: "u", Password: "p", Database: "d", Env: "DATABASE_URL"},
+		},
+	}
+}
+
+func TestValidateDatabasesRejectsUnknownEngine(t *testing.T) {
+	cfg := minimalValidDatabases()
+	db := cfg.Databases["mydb"]
+	db.Engine = "mongodb"
+	cfg.Databases["mydb"] = db
+	if err := cfg.ValidateDatabases(); err == nil {
+		t.Fatal("expected error for unknown engine")
+	}
+}
+
+func TestValidateDatabasesRequiresFields(t *testing.T) {
+	cfg := minimalValidDatabases()
+	db := cfg.Databases["mydb"]
+	db.Host = ""
+	cfg.Databases["mydb"] = db
+	if err := cfg.ValidateDatabases(); err == nil {
+		t.Fatal("expected error for missing host")
+	}
+}
+
+func TestValidateDatabasesRejectsInvalidPort(t *testing.T) {
+	cfg := minimalValidDatabases()
+	db := cfg.Databases["mydb"]
+	db.Port = 0
+	cfg.Databases["mydb"] = db
+	if err := cfg.ValidateDatabases(); err == nil {
+		t.Fatal("expected error for port 0")
+	}
+}
+
+func TestValidateDatabasesRejectsDuplicateEnvNames(t *testing.T) {
+	cfg := minimalValidDatabases()
+	cfg.Databases["second"] = DatabaseConfig{
+		Engine: "postgres", Host: "h", Port: 5432, User: "u",
+		Password: "p", Database: "d", Env: "DATABASE_URL",
+	}
+	err := cfg.ValidateDatabases()
+	if err == nil {
+		t.Fatal("expected error for duplicate env var name")
+	}
+	if !strings.Contains(err.Error(), "second") || !strings.Contains(err.Error(), "mydb") {
+		t.Fatalf("error should name both entries: %v", err)
+	}
+}
+
+func TestValidateDatabasesRejectsReservedEnvNames(t *testing.T) {
+	for _, name := range []string{"PATH", "HTTPS_PROXY", "SSL_CERT_FILE", "CREDPROXY_TOKEN", "PGPASSWORD"} {
+		cfg := minimalValidDatabases()
+		db := cfg.Databases["mydb"]
+		db.Env = name
+		cfg.Databases["mydb"] = db
+		if err := cfg.ValidateDatabases(); err == nil {
+			t.Fatalf("expected error for reserved env name %s", name)
+		}
+	}
+}
+
+func TestValidateDatabasesNoDatabasesOK(t *testing.T) {
+	cfg := &Config{}
+	if err := cfg.ValidateDatabases(); err != nil {
+		t.Fatalf("empty config should validate: %v", err)
+	}
+}
+
+func TestResolveDatabasePasswordsResolvesAndFailsFast(t *testing.T) {
+	cfg := minimalValidDatabases()
+	db := cfg.Databases["mydb"]
+	db.Password = "op://x/y/z"
+	cfg.Databases["mydb"] = db
+	fake := &stubResolver{resolved: map[string]string{"op://x/y/z": "resolved-pw"}}
+	if err := cfg.ResolveDatabasePasswords(context.Background(), fake); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Databases["mydb"].Password != "resolved-pw" {
+		t.Fatalf("password not written back: %q", cfg.Databases["mydb"].Password)
+	}
+
+	broken := &stubResolver{err: map[string]error{"op://x/y/z": errors.New("vault locked")}}
+	cfg2 := minimalValidDatabases()
+	db2 := cfg2.Databases["mydb"]
+	db2.Password = "op://x/y/z"
+	cfg2.Databases["mydb"] = db2
+	if err := cfg2.ResolveDatabasePasswords(context.Background(), broken); err == nil {
+		t.Fatal("expected fail-fast on resolution error")
+	}
+}
+
+func TestMergeProfilesMergeDatabases(t *testing.T) {
+	global := &Config{Env: map[string]string{}, Hosts: map[string]HostConfig{}, Databases: map[string]DatabaseConfig{},
+		Profiles: map[string]ProfileConfig{"staging": {Hosts: map[string]HostConfig{}, Env: map[string]string{}, Databases: map[string]DatabaseConfig{
+			"mydb": {Engine: "postgres", Host: "global.example.com", Port: 5432, User: "u", Password: "p", Database: "d", Env: "DATABASE_URL"}}}}}
+	project := &Config{Env: map[string]string{}, Hosts: map[string]HostConfig{}, Databases: map[string]DatabaseConfig{},
+		Profiles: map[string]ProfileConfig{"staging": {Hosts: map[string]HostConfig{}, Env: map[string]string{}, Databases: map[string]DatabaseConfig{
+			"projdb": {Engine: "mysql", Host: "proj.example.com", Port: 3306, User: "u2", Password: "p2", Database: "d2", Env: "PROJ_URL"}}}}}
+	merged := global.Merge(project)
+	if len(merged.Profiles["staging"].Databases) != 2 {
+		t.Fatalf("profile databases from both files must merge, got %+v", merged.Profiles["staging"].Databases)
+	}
+}
+
+func TestValidateDatabasesAllowsSharedUsernames(t *testing.T) {
+	// The embedded relay dials each entry's backend directly — there is no
+	// per-username routing constraint (the old ProxySQL rule is gone).
+	cfg := minimalValidDatabases()
+	cfg.Databases["mdb"] = DatabaseConfig{Engine: "mysql", Host: "h", Port: 3306, User: "mu", Password: "p", Database: "d", Env: "OTHER_URL"}
+	cfg.Databases["mdb2"] = DatabaseConfig{Engine: "mysql", Host: "h2", Port: 3306, User: "mu", Password: "p2", Database: "d2", Env: "THIRD_URL"}
+	cfg.Databases["pg2"] = DatabaseConfig{Engine: "postgres", Host: "h2", Port: 5432, User: "u", Password: "p2", Database: "d2", Env: "PG2_URL"}
+	if err := cfg.ValidateDatabases(); err != nil {
+		t.Fatalf("shared usernames must validate: %v", err)
+	}
+}
+
+func TestValidateDatabasesRejectsWhitespaceInHost(t *testing.T) {
+	// Only the host is format-constrained now: it is a network address.
+	// Passwords and usernames flow through URL percent-encoding and
+	// binary-safe auth protocols, so spaces in them are fine.
+	cfg := minimalValidDatabases()
+	db := cfg.Databases["mydb"]
+	db.Host = "host with space"
+	cfg.Databases["mydb"] = db
+	if err := cfg.ValidateDatabases(); err == nil {
+		t.Fatal("expected whitespace-in-host error")
+	}
+	cfg2 := minimalValidDatabases()
+	db2 := cfg2.Databases["mydb"]
+	db2.Password = "pass with space"
+	cfg2.Databases["mydb"] = db2
+	if err := cfg2.ValidateDatabases(); err != nil {
+		t.Fatalf("password with space must validate: %v", err)
+	}
+}
+
+func TestValidateDatabasesParams(t *testing.T) {
+	cfg := minimalValidDatabases()
+	db := cfg.Databases["mydb"]
+	db.Params = "sslmode=bogus"
+	cfg.Databases["mydb"] = db
+	if err := cfg.ValidateDatabases(); err == nil {
+		t.Fatal("expected invalid sslmode error")
+	}
+	cfg2 := minimalValidDatabases()
+	db2 := cfg2.Databases["mydb"]
+	db2.Params = "sslmode=require"
+	cfg2.Databases["mydb"] = db2
+	if err := cfg2.ValidateDatabases(); err != nil {
+		t.Fatalf("valid sslmode must pass: %v", err)
+	}
+	cfg3 := minimalValidDatabases()
+	db3 := DatabaseConfig{Engine: "mysql", Host: "h", Port: 3306, User: "mu", Password: "p", Database: "d", Params: "use_ssl=2", Env: "MYSQL_URL"}
+	cfg3.Databases["mydb"] = db3
+	if err := cfg3.ValidateDatabases(); err == nil {
+		t.Fatal("expected invalid use_ssl error")
+	}
+	cfg4 := minimalValidDatabases()
+	db4 := DatabaseConfig{Engine: "mysql", Host: "h", Port: 3306, User: "mu", Password: "p", Database: "d", Params: "use_ssl=1", Env: "MYSQL_URL"}
+	cfg4.Databases["mydb"] = db4
+	if err := cfg4.ValidateDatabases(); err != nil {
+		t.Fatalf("valid use_ssl must pass: %v", err)
+	}
+}
+
+func TestValidateDatabasesRejectsPrevBashEnv(t *testing.T) {
+	cfg := minimalValidDatabases()
+	db := cfg.Databases["mydb"]
+	db.Env = "CREDPROXY_PREV_BASH_ENV"
+	cfg.Databases["mydb"] = db
+	if err := cfg.ValidateDatabases(); err == nil {
+		t.Fatal("expected reserved-env error for CREDPROXY_PREV_BASH_ENV")
+	}
+}
+
+func TestValidateDatabasesMySQLSslmodeAlias(t *testing.T) {
+	// Users reach for sslmode on mysql entries (MySQL's own vocabulary).
+	// Accept: disabled → no TLS; required → encrypted, unverified.
+	// Reject: verify_* (backend today silently skips verification, which
+	// would make them a security lie until ca_file lands), preferred (it
+	// would silently downgrade).
+	cases := []struct {
+		sslmode string
+		wantErr bool
+	}{
+		{"required", false},
+		{"disabled", false},
+		{"verify_ca", true},
+		{"verify_identity", true},
+		{"REQUIRED", false},
+		{"preferred", true},
+		{"bogus", true},
+	}
+	for _, c := range cases {
+		cfg := minimalValidDatabases()
+		db := DatabaseConfig{Engine: "mysql", Host: "h", Port: 3306, User: "mu", Password: "p", Database: "d", Params: "sslmode=" + c.sslmode, Env: "MYSQL_URL"}
+		cfg.Databases["mydb"] = db
+		err := cfg.ValidateDatabases()
+		if c.wantErr && err == nil {
+			t.Errorf("sslmode=%q: expected error", c.sslmode)
+		}
+		if !c.wantErr && err != nil {
+			t.Errorf("sslmode=%q: unexpected error: %v", c.sslmode, err)
+		}
+	}
+}
+
+func TestValidateDatabasesMySQLParamConflict(t *testing.T) {
+	cfg := minimalValidDatabases()
+	db := DatabaseConfig{Engine: "mysql", Host: "h", Port: 3306, User: "mu", Password: "p", Database: "d", Params: "use_ssl=1,sslmode=required", Env: "MYSQL_URL"}
+	cfg.Databases["mydb"] = db
+	if err := cfg.ValidateDatabases(); err == nil {
+		t.Fatal("expected error when use_ssl and sslmode are both set")
+	}
+}

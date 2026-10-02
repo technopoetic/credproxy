@@ -63,7 +63,7 @@ func TestBuildChildEnvStripsSecretSessions(t *testing.T) {
 	t.Setenv("BW_SESSION", "unlocked")
 	t.Setenv("HOME", "/Users/test")
 
-	env := buildChildEnv(&config.Config{}, "9999", "/usr/bin:/bin", "/tmp/ca.pem", "")
+	env := buildChildEnv(&config.Config{}, "9999", "/usr/bin:/bin", "/tmp/ca.pem", "", nil, nil)
 	for _, e := range env {
 		if strings.HasPrefix(e, "OP_SERVICE_ACCOUNT_TOKEN=") || strings.HasPrefix(e, "BW_SESSION=") {
 			t.Fatalf("secret session var leaked into child env: %s", e)
@@ -85,7 +85,7 @@ func TestBuildChildEnvSetsBASHEnvWhenShimsExist(t *testing.T) {
 	_, shimDir, cleanup := stripSecretStoreCLIs(fakeDir)
 	defer cleanup()
 
-	env := buildChildEnv(&config.Config{}, "9999", "/usr/bin:/bin", "/tmp/ca.pem", shimDir)
+	env := buildChildEnv(&config.Config{}, "9999", "/usr/bin:/bin", "/tmp/ca.pem", shimDir, nil, nil)
 
 	var bashEnv string
 	for _, e := range env {
@@ -116,7 +116,7 @@ func TestBuildChildEnvPreservesInheritedBASHEnv(t *testing.T) {
 	}
 	_, shimDir, cleanup := stripSecretStoreCLIs(fakeDir)
 	defer cleanup()
-	env := buildChildEnv(&config.Config{}, "9999", "/usr/bin:/bin", "/tmp/ca.pem", shimDir)
+	env := buildChildEnv(&config.Config{}, "9999", "/usr/bin:/bin", "/tmp/ca.pem", shimDir, nil, nil)
 
 	var prev, bashEnv string
 	for _, e := range env {
@@ -174,4 +174,47 @@ func execScript(t *testing.T, script string, pathEnv string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(stdout.String()), nil
+}
+
+func TestBuildChildEnvStripsInheritedDatabaseEnv(t *testing.T) {
+	t.Setenv("HOME", "/Users/test")
+	t.Setenv("DATABASE_URL", "postgres://app_user:REALPW@prod.example.com/db")
+	t.Setenv("PGPASSWORD", "REALPW")
+	poolerEnv := map[string]string{"DATABASE_URL": "postgres://app_user:sess@127.0.0.1:6432/mydb"}
+
+	env := buildChildEnv(&config.Config{}, "9999", "/usr/bin:/bin", "/tmp/ca.pem", "",
+		poolerEnv, []string{"DATABASE_URL", "PGPASSWORD"})
+	for _, e := range env {
+		if strings.HasPrefix(e, "DATABASE_URL=postgres://app_user:REALPW@") {
+			t.Fatalf("inherited real DATABASE_URL leaked into child env: %s", e)
+		}
+		if strings.HasPrefix(e, "PGPASSWORD=") {
+			t.Fatalf("PGPASSWORD leaked into child env: %s", e)
+		}
+	}
+	found := false
+	for _, e := range env {
+		if e == "DATABASE_URL=postgres://app_user:sess@127.0.0.1:6432/mydb" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("pooler URL not injected into child env")
+	}
+}
+
+func TestBuildChildEnvPoolerWinsOverConfigEnv(t *testing.T) {
+	t.Setenv("HOME", "/Users/test")
+	cfg := &config.Config{Env: map[string]string{"DATABASE_URL": "postgres://config-value@confighost/db"}}
+	env := buildChildEnv(cfg, "9999", "/usr/bin:/bin", "/tmp/ca.pem", "",
+		map[string]string{"DATABASE_URL": "postgres://pooler-value@127.0.0.1:6432/mydb"}, nil)
+	var last string
+	for _, e := range env {
+		if strings.HasPrefix(e, "DATABASE_URL=") {
+			last = e
+		}
+	}
+	if last != "DATABASE_URL=postgres://pooler-value@127.0.0.1:6432/mydb" {
+		t.Fatalf("pooler env must win over [env] config (os/exec last-wins): %q", last)
+	}
 }

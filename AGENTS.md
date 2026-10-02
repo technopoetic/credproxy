@@ -24,6 +24,13 @@ v2 core implementation complete and live-tested. Tagged v0.1.0:
   leaves the shim dir present but behind `/usr/local/bin` — where the real `op` lives. `BW_SESSION` is also stripped
   from the child env so an unlocked Bitwarden session cannot leak through.
 - First-run scaffolding: creates `~/.config/credproxy/`, writes example config if none exists, touches log file (fixes crash on fresh install where log OpenFile ran before dir existed)
+- DB credential isolation: `[databases.*]` config entries start embedded
+  auth-split relays at wrap time (in-process, no external binaries or
+  containers); child gets a localhost-only URL with a random per-session
+  password, real `op://`-resolved credential stays in credproxy memory only —
+  never on disk. `internal/dbrelay/` + `internal/dbproxy/{pg,mysql}/`.
+  Handshakes are hand-rolled on documented framing (pg: pgproto-free, scram
+  via xdg-go/scram; mysql: native + caching_sha2 incl. full-auth RSA).
 
 ## Remaining Work
 
@@ -32,10 +39,23 @@ v2 core implementation complete and live-tested. Tagged v0.1.0:
   (e.g. `opencode serve --service`) can outlive the credproxy session and keep failing network calls against the dead
   proxy URL — hit 2026-09-28 when a Sep 25 service poisoned opencode's provider catalog fetches for days
 - Consider adding `no_proxy_hosts` config to avoid routing LLM traffic through proxy
+- Add `ca_file` option to `[databases.*]` wiring `RootCAs` for real TLS verification. Today mysql backend TLS encrypts without chain verification (InsecureSkipVerify mirrors go-sql-driver use_ssl=1 semantics), and mysql `verify_ca`/`verify_identity` are rejected at config validation so nobody accepts a silent downgrade (2026-10-02 review finding #2). PG `verify-full` IS genuinely implemented but needs the same ca_file to be usable against private CAs.
 - Investigate TLS "bad record MAC" on first `op read` (handshake timeout during 1Password auth prompt)
 
 ## Known Issues
 
+- op:// resolution fails at wrap startup whenever 1Password needs an approval
+  for the renamed client and nobody approves in time: the provider renames
+  `argv[0]` to "credproxy-op", which 1Password treats as a separate client
+  identity — it shows an approval prompt on each cold authorization. If the
+  human is away (or slow), the 30s per-call deadline expires first and
+  startup dies with "context deadline exceeded". Real-identity `op` is
+  pre-authorized and never prompts (~12ms). Reproduced 2026-10-02: a prompt
+  was on screen, unapproved, while Richard was AFK. **DECIDED 2026-10-02: the
+  rename stays.** A human knowing exactly when something accesses 1Password
+  is part of the security promise; headless wraps are not in scope, so the
+  approval-at-cold-start cost is the price of the prompt, paid once per
+  cold start.
 - op/bw shim does not cover shells invoked *as* login shells (`bash -l`, `bash -lc`) inside the wrapped child: those
   read profile files, not `BASH_ENV`, and `path_helper` puts the real `op` back ahead of the shim. The common case
   (agent tool calls spawning non-interactive `bash -c`, including nested under a login parent) is covered via
@@ -68,6 +88,8 @@ go install ./cmd/credproxy/  # install to ~/go/bin/credproxy
 - `internal/resolver/` — Sentinel matching in headers, body, and query strings
 - `internal/mitm/` — MITM proxy for configured hosts, plain tunnel for unconfigured hosts, forward-proxy for absolute-URI requests
 - `internal/providers/` — 1Password CLI provider (op read)
+- `internal/dbrelay/` — Session relay lifecycle and child env computation
+- `internal/dbproxy/` — Embedded auth-split relay: shared byte pipe, Postgres and MySQL handshakes
 - `internal/ca/` — Self-signed CA + per-host leaf cert minting
 - `cmd/credproxy/` — Wrap mode entrypoint
 

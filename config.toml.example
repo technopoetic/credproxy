@@ -29,3 +29,19 @@ credential = "op://Personal/stripe-live/key"
 [profiles.production.env]
 RAILS_ENV = "production"
 PORT = "443"
+
+# Database credential isolation (optional)
+# Each entry opens a local relay at session start; the wrapped child gets
+# <env> pointing at 127.0.0.1 with a random per-session password. The real
+# password (op:// or literal) never reaches the child and never touches disk.
+# Works for postgres and mysql; no external binaries needed.
+#
+# [databases.mydb]
+# engine = "postgres"              # or "mysql"
+# host = "db.example.com"
+# port = 5432
+# user = "app_user"
+# password = "op://Private/mydb/password"   # op:// URI or literal
+# database = "appdb"
+# params = "sslmode=require"       # optional backend TLS (both engines)
+# env = "DATABASE_URL"             # env var injected into the wrapped child

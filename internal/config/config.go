@@ -32,15 +32,31 @@ type HostConfig struct {
 }
 
 type ProfileConfig struct {
-	Hosts map[string]HostConfig `toml:"hosts"`
-	Env   map[string]string     `toml:"env"`
+	Hosts     map[string]HostConfig     `toml:"hosts"`
+	Env       map[string]string         `toml:"env"`
+	Databases map[string]DatabaseConfig `toml:"databases"`
+}
+
+// DatabaseConfig describes one real database target. credproxy fronts it with
+// a session pooler and injects a localhost-only connection string into the
+// child, so the real password never reaches the wrapped process.
+type DatabaseConfig struct {
+	Engine   string `toml:"engine"`
+	Host     string `toml:"host"`
+	Port     int    `toml:"port"`
+	User     string `toml:"user"`
+	Password string `toml:"password"`
+	Database string `toml:"database"`
+	Params   string `toml:"params"`
+	Env      string `toml:"env"`
 }
 
 type Config struct {
-	Env      map[string]string        `toml:"env"`
-	Hosts    map[string]HostConfig    `toml:"hosts"`
-	Profiles map[string]ProfileConfig `toml:"profiles"`
-	hostsSet map[string]bool
+	Env       map[string]string         `toml:"env"`
+	Hosts     map[string]HostConfig     `toml:"hosts"`
+	Databases map[string]DatabaseConfig `toml:"databases"`
+	Profiles  map[string]ProfileConfig  `toml:"profiles"`
+	hostsSet  map[string]bool
 }
 
 func Load(path string) (*Config, error) {
@@ -63,6 +79,9 @@ func (c *Config) SetDefaults() {
 	if c.Env == nil {
 		c.Env = make(map[string]string)
 	}
+	if c.Databases == nil {
+		c.Databases = make(map[string]DatabaseConfig)
+	}
 	if c.Profiles == nil {
 		c.Profiles = make(map[string]ProfileConfig)
 	}
@@ -73,6 +92,9 @@ func (c *Config) SetDefaults() {
 		if p.Env == nil {
 			p.Env = make(map[string]string)
 		}
+		if p.Databases == nil {
+			p.Databases = make(map[string]DatabaseConfig)
+		}
 		c.Profiles[name] = p
 	}
 	c.hostsSet = make(map[string]bool, len(c.Hosts))
@@ -81,13 +103,13 @@ func (c *Config) SetDefaults() {
 	}
 }
 
-
 func (c *Config) Merge(overlay *Config) *Config {
 	merged := &Config{
-		Env:      make(map[string]string, len(c.Env)+len(overlay.Env)),
-		Hosts:    make(map[string]HostConfig, len(c.Hosts)+len(overlay.Hosts)),
-		Profiles: make(map[string]ProfileConfig, len(c.Profiles)+len(overlay.Profiles)),
-		hostsSet: make(map[string]bool, len(c.Hosts)+len(overlay.Hosts)),
+		Env:       make(map[string]string, len(c.Env)+len(overlay.Env)),
+		Hosts:     make(map[string]HostConfig, len(c.Hosts)+len(overlay.Hosts)),
+		Databases: make(map[string]DatabaseConfig, len(c.Databases)+len(overlay.Databases)),
+		Profiles:  make(map[string]ProfileConfig, len(c.Profiles)+len(overlay.Profiles)),
+		hostsSet:  make(map[string]bool, len(c.Hosts)+len(overlay.Hosts)),
 	}
 	for k, v := range c.Env {
 		merged.Env[k] = v
@@ -103,14 +125,24 @@ func (c *Config) Merge(overlay *Config) *Config {
 		merged.Hosts[host] = hc
 		merged.hostsSet[host] = true
 	}
+	// Whole-entry replacement, matching HostConfig semantics: a project entry
+	// with the same name replaces the global one rather than mixing fields
+	// from two environments.
+	for name, db := range c.Databases {
+		merged.Databases[name] = db
+	}
+	for name, db := range overlay.Databases {
+		merged.Databases[name] = db
+	}
 	for name, p := range c.Profiles {
 		merged.Profiles[name] = p
 	}
 	for name, p := range overlay.Profiles {
 		if existing, ok := merged.Profiles[name]; ok {
 			ep := ProfileConfig{
-				Hosts: make(map[string]HostConfig, len(existing.Hosts)+len(p.Hosts)),
-				Env:   make(map[string]string, len(existing.Env)+len(p.Env)),
+				Hosts:     make(map[string]HostConfig, len(existing.Hosts)+len(p.Hosts)),
+				Env:       make(map[string]string, len(existing.Env)+len(p.Env)),
+				Databases: make(map[string]DatabaseConfig, len(existing.Databases)+len(p.Databases)),
 			}
 			for k, v := range existing.Env {
 				ep.Env[k] = v
@@ -123,6 +155,12 @@ func (c *Config) Merge(overlay *Config) *Config {
 			}
 			for h, hc := range p.Hosts {
 				ep.Hosts[h] = hc
+			}
+			for name, db := range existing.Databases {
+				ep.Databases[name] = db
+			}
+			for name, db := range p.Databases {
+				ep.Databases[name] = db
 			}
 			merged.Profiles[name] = ep
 		} else {
@@ -151,18 +189,17 @@ func (c *Config) EnvVars() map[string]string {
 	return c.Env
 }
 
-// ResolveEnv walks c.Env and resolves any value starting with "op://" through
-// the supplied EnvResolver, replacing the URI with the resolved secret. Other
-// values pass through untouched. Resolutions run concurrently; each call has
-// its own 30s deadline. The first resolution error fails the whole batch and
-// is returned joined with any other errors.
-func (c *Config) ResolveEnv(ctx context.Context, r EnvResolver) error {
+// resolveURIs resolves every value in items that starts with "op://" through
+// r, concurrently, each with its own 30s deadline. apply writes a resolved
+// value back into the caller's structure. The first error fails the batch;
+// all errors are returned joined.
+func resolveURIs(ctx context.Context, r EnvResolver, items map[string]string, label string, apply func(key, value string)) error {
 	type pending struct {
 		key string
 		uri string
 	}
 	var work []pending
-	for k, v := range c.Env {
+	for k, v := range items {
 		if strings.HasPrefix(v, "op://") {
 			work = append(work, pending{key: k, uri: v})
 		}
@@ -194,12 +231,35 @@ func (c *Config) ResolveEnv(ctx context.Context, r EnvResolver) error {
 	var errs []error
 	for res := range results {
 		if res.err != nil {
-			errs = append(errs, fmt.Errorf("resolving env %s: %w", res.key, res.err))
+			errs = append(errs, fmt.Errorf("resolving %s %s: %w", label, res.key, res.err))
 			continue
 		}
-		c.Env[res.key] = res.value
+		apply(res.key, res.value)
 	}
 	return errors.Join(errs...)
+}
+
+// ResolveEnv walks c.Env and resolves any value starting with "op://" through
+// the supplied EnvResolver, replacing the URI with the resolved secret. Other
+// values pass through untouched. Resolutions run concurrently; each call has
+// its own 30s deadline. The first resolution error fails the whole batch and
+// is returned joined with any other errors.
+func (c *Config) ResolveEnv(ctx context.Context, r EnvResolver) error {
+	return resolveURIs(ctx, r, c.Env, "env", func(k, v string) { c.Env[k] = v })
+}
+
+// ResolveDatabasePasswords resolves op:// URIs in [databases.*] passwords at
+// startup, fail-fast, before any pooler is started with a broken credential.
+func (c *Config) ResolveDatabasePasswords(ctx context.Context, r EnvResolver) error {
+	uris := make(map[string]string, len(c.Databases))
+	for name, db := range c.Databases {
+		uris[name] = db.Password
+	}
+	return resolveURIs(ctx, r, uris, "database password", func(name, pw string) {
+		db := c.Databases[name]
+		db.Password = pw
+		c.Databases[name] = db
+	})
 }
 
 func (c *Config) ProfileNames() []string {
@@ -219,10 +279,11 @@ func (c *Config) ApplyProfile(name string) (*Config, error) {
 		return nil, fmt.Errorf("profile %q not found; available: %v", name, c.ProfileNames())
 	}
 	result := &Config{
-		Env:      make(map[string]string, len(c.Env)+len(profile.Env)),
-		Hosts:    make(map[string]HostConfig, len(c.Hosts)+len(profile.Hosts)),
-		Profiles: c.Profiles,
-		hostsSet: make(map[string]bool, len(c.Hosts)+len(profile.Hosts)),
+		Env:       make(map[string]string, len(c.Env)+len(profile.Env)),
+		Hosts:     make(map[string]HostConfig, len(c.Hosts)+len(profile.Hosts)),
+		Databases: make(map[string]DatabaseConfig, len(c.Databases)+len(profile.Databases)),
+		Profiles:  c.Profiles,
+		hostsSet:  make(map[string]bool, len(c.Hosts)+len(profile.Hosts)),
 	}
 	for k, v := range c.Env {
 		result.Env[k] = v
@@ -238,11 +299,121 @@ func (c *Config) ApplyProfile(name string) (*Config, error) {
 		result.Hosts[host] = hc
 		result.hostsSet[host] = true
 	}
+	for name, db := range c.Databases {
+		result.Databases[name] = db
+	}
+	for name, db := range profile.Databases {
+		result.Databases[name] = db
+	}
 	return result, nil
 }
 
 func (c *Config) AllowAll() {
 	c.hostsSet["*"] = true
+}
+
+// reservedEnvNames are variables credproxy itself injects or filters in the
+// child env. A database env var with one of these names would fight the
+// proxy's own wiring, so it is rejected at validation time.
+var reservedEnvNames = map[string]bool{
+	"PATH": true, "HOME": true, "BASH_ENV": true, "CREDPROXY_PREV_BASH_ENV": true,
+	"HTTPS_PROXY": true, "HTTP_PROXY": true, "https_proxy": true, "http_proxy": true,
+	"NO_PROXY": true, "no_proxy": true,
+	"SSL_CERT_FILE": true, "REQUESTS_CA_BUNDLE": true, "NODE_EXTRA_CA_CERTS": true,
+	"CURL_CA_BUNDLE": true, "CREDPROXY_TOKEN": true,
+	"PGPASSWORD": true, "MYSQL_PWD": true,
+}
+
+// ValidateDatabases checks every [databases.*] entry: known engine, required
+// fields present, port in range, unique env var names, no reserved env var
+// names, no whitespace in the host (a network address), and engine-valid
+// params. All problems are reported in one joined error.
+func (c *Config) ValidateDatabases() error {
+	var errs []error
+	seenEnv := make(map[string]string, len(c.Databases))
+	for name, db := range c.Databases {
+		if db.Engine != "postgres" && db.Engine != "mysql" {
+			errs = append(errs, fmt.Errorf("database %q: engine must be \"postgres\" or \"mysql\", got %q", name, db.Engine))
+		}
+		for field, val := range map[string]string{
+			"host":     db.Host,
+			"user":     db.User,
+			"password": db.Password,
+			"database": db.Database,
+			"env":      db.Env,
+		} {
+			if val == "" {
+				errs = append(errs, fmt.Errorf("database %q: %s is required", name, field))
+			}
+		}
+		if db.Port <= 0 || db.Port > 65535 {
+			errs = append(errs, fmt.Errorf("database %q: port must be between 1 and 65535, got %d", name, db.Port))
+		}
+		if reservedEnvNames[db.Env] {
+			errs = append(errs, fmt.Errorf("database %q: env var name %q is reserved by credproxy", name, db.Env))
+		}
+		if prev, ok := seenEnv[db.Env]; ok && db.Env != "" {
+			errs = append(errs, fmt.Errorf("database %q: env var %q already used by database %q", name, db.Env, prev))
+		}
+		seenEnv[db.Env] = name
+		if strings.ContainsFunc(db.Host, func(r rune) bool { return r <= ' ' || r == 0x7f }) {
+			errs = append(errs, fmt.Errorf("database %q: host must not contain whitespace or control characters", name))
+		}
+		if err := validateParams(db.Engine, db.Params); err != nil {
+			errs = append(errs, fmt.Errorf("database %q: %v", name, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// validateParams checks the engine-interpreted backend params: postgres
+// takes a backend sslmode; mysql takes use_ssl or sslmode (MySQL's own
+// vocabulary — sslmode=required/verify_* enable backend TLS, disabled
+// disables it; "preferred" is rejected because the relay cannot try-then-
+// fall back, and silently downgrading a TLS request would be worse).
+func validateParams(engine, params string) error {
+	if params == "" {
+		return nil
+	}
+	seen := make(map[string]string)
+	for _, kv := range strings.Split(params, ",") {
+		parts := strings.SplitN(strings.TrimSpace(kv), "=", 2)
+		if len(parts) != 2 {
+			return fmt.Errorf("params %q is not key=value", params)
+		}
+		key, val := parts[0], parts[1]
+		switch {
+		case engine == "postgres" && key == "sslmode":
+			switch val {
+			case "disable", "prefer", "require", "verify-full":
+			default:
+				return fmt.Errorf("sslmode %q must be disable, prefer, require, or verify-full", val)
+			}
+			seen[key] = val
+		case engine == "mysql" && key == "sslmode":
+			switch strings.ToLower(val) {
+			case "disabled", "required":
+				seen[key] = val
+			case "verify_ca", "verify_identity":
+				return fmt.Errorf("mysql sslmode %q promises certificate verification the relay does not implement — backend TLS today encrypts without chain verification (use_ssl=1 semantics). Use \"required\", or wait for ca_file support rather than accepting a silent downgrade", val)
+			default:
+				return fmt.Errorf("mysql sslmode %q must be disabled or required (\"preferred\" would silently downgrade TLS)", val)
+			}
+		case engine == "mysql" && key == "use_ssl":
+			if val != "0" && val != "1" {
+				return fmt.Errorf("use_ssl %q must be 0 or 1", val)
+			}
+			seen[key] = val
+		default:
+			return fmt.Errorf("param %q is not supported for engine %q", key, engine)
+		}
+	}
+	if _, hasSSL := seen["sslmode"]; hasSSL {
+		if _, hasUseSSL := seen["use_ssl"]; hasUseSSL {
+			return fmt.Errorf("use_ssl and sslmode are the same setting — set only one")
+		}
+	}
+	return nil
 }
 
 func WalkProjectConfig(cwd, stopAt string) (string, error) {
