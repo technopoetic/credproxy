@@ -458,6 +458,15 @@ func TestBackendCachingSha2FullAuthRSA(t *testing.T) {
 		}
 		// full auth required
 		_ = writePacket(conn, &seq, []byte{0x01, 0x04})
+		// the relay must request the public key (payload 0x02) before we
+		// send it — real MySQL servers require this step
+		if req, err := readPacketErr(conn); err != nil {
+			backendErr <- err
+			return
+		} else if len(req) != 1 || req[0] != 0x02 {
+			backendErr <- errors.New("expected public-key request packet 0x02")
+			return
+		}
 		_ = writePacket(conn, &seq, pubPEM)
 		// relay responds with RSA-OAEP-encrypted XOR(password∥NUL, scramble)
 		ct, err := readPacketErr(conn)

@@ -24,11 +24,13 @@ v2 core implementation complete and live-tested. Tagged v0.1.0:
   leaves the shim dir present but behind `/usr/local/bin` — where the real `op` lives. `BW_SESSION` is also stripped
   from the child env so an unlocked Bitwarden session cannot leak through.
 - First-run scaffolding: creates `~/.config/credproxy/`, writes example config if none exists, touches log file (fixes crash on fresh install where log OpenFile ran before dir existed)
-- DB credential isolation: `[databases.*]` config entries start session-scoped
-  poolers (pgbouncer/ProxySQL) at wrap time; child gets a localhost-only URL
-  with a random per-session password, real `op://`-resolved credential stays
-  backend-side. `internal/pooler/`. ProxySQL users are provisioned through the
-  admin interface at startup so the static cnf holds no secrets.
+- DB credential isolation: `[databases.*]` config entries start embedded
+  auth-split relays at wrap time (in-process, no external binaries or
+  containers); child gets a localhost-only URL with a random per-session
+  password, real `op://`-resolved credential stays in credproxy memory only —
+  never on disk. `internal/dbrelay/` + `internal/dbproxy/{pg,mysql}/`.
+  Handshakes are hand-rolled on documented framing (pg: pgproto-free, scram
+  via xdg-go/scram; mysql: native + caching_sha2 incl. full-auth RSA).
 
 ## Remaining Work
 
@@ -41,11 +43,6 @@ v2 core implementation complete and live-tested. Tagged v0.1.0:
 
 ## Known Issues
 
-- MySQL live testing on the dev machine has no proxysql binary available (no
-  Homebrew; mise registry lacks it); ProxySQL mechanics are spike-verified in
-  containers (see docs/plans/2026-10-01-db-pooler-spike-findings.md) and the
-  credproxy launch path is covered by fake-binary tests. See
-  docs/live-testing-db-poolers.md for status and options.
 - op/bw shim does not cover shells invoked *as* login shells (`bash -l`, `bash -lc`) inside the wrapped child: those
   read profile files, not `BASH_ENV`, and `path_helper` puts the real `op` back ahead of the shim. The common case
   (agent tool calls spawning non-interactive `bash -c`, including nested under a login parent) is covered via
@@ -78,7 +75,8 @@ go install ./cmd/credproxy/  # install to ~/go/bin/credproxy
 - `internal/resolver/` — Sentinel matching in headers, body, and query strings
 - `internal/mitm/` — MITM proxy for configured hosts, plain tunnel for unconfigured hosts, forward-proxy for absolute-URI requests
 - `internal/providers/` — 1Password CLI provider (op read)
-- `internal/pooler/` — Session-scoped pgbouncer/ProxySQL lifecycle and config generation
+- `internal/dbrelay/` — Session relay lifecycle and child env computation
+- `internal/dbproxy/` — Embedded auth-split relay: shared byte pipe, Postgres and MySQL handshakes
 - `internal/ca/` — Self-signed CA + per-host leaf cert minting
 - `cmd/credproxy/` — Wrap mode entrypoint
 
