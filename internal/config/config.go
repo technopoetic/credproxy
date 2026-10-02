@@ -392,14 +392,13 @@ func validateParams(engine, params string) error {
 			seen[key] = val
 		case engine == "mysql" && key == "sslmode":
 			switch strings.ToLower(val) {
-			case "disabled":
-				seen[key] = "0"
-			case "required", "verify_ca", "verify_identity":
-				seen[key] = "1"
+			case "disabled", "required":
+				seen[key] = val
+			case "verify_ca", "verify_identity":
+				return fmt.Errorf("mysql sslmode %q promises certificate verification the relay does not implement — backend TLS today encrypts without chain verification (use_ssl=1 semantics). Use \"required\", or wait for ca_file support rather than accepting a silent downgrade", val)
 			default:
-				return fmt.Errorf("mysql sslmode %q must be disabled, required, verify_ca, or verify_identity (\"preferred\" would silently downgrade TLS)", val)
+				return fmt.Errorf("mysql sslmode %q must be disabled or required (\"preferred\" would silently downgrade TLS)", val)
 			}
-			seen[key] = val
 		case engine == "mysql" && key == "use_ssl":
 			if val != "0" && val != "1" {
 				return fmt.Errorf("use_ssl %q must be 0 or 1", val)

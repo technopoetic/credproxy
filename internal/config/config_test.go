@@ -973,16 +973,18 @@ func TestValidateDatabasesRejectsPrevBashEnv(t *testing.T) {
 
 func TestValidateDatabasesMySQLSslmodeAlias(t *testing.T) {
 	// Users reach for sslmode on mysql entries (MySQL's own vocabulary).
-	// Accept it: disabled → no TLS; required/verify_* → backend TLS;
-	// preferred → rejected (it would silently downgrade).
+	// Accept: disabled → no TLS; required → encrypted, unverified.
+	// Reject: verify_* (backend today silently skips verification, which
+	// would make them a security lie until ca_file lands), preferred (it
+	// would silently downgrade).
 	cases := []struct {
 		sslmode string
 		wantErr bool
 	}{
 		{"required", false},
 		{"disabled", false},
-		{"verify_ca", false},
-		{"verify_identity", false},
+		{"verify_ca", true},
+		{"verify_identity", true},
 		{"REQUIRED", false},
 		{"preferred", true},
 		{"bogus", true},
