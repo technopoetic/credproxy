@@ -24,6 +24,8 @@ v2 core implementation complete and live-tested. Tagged v0.1.0:
   leaves the shim dir present but behind `/usr/local/bin` — where the real `op` lives. `BW_SESSION` is also stripped
   from the child env so an unlocked Bitwarden session cannot leak through.
 - First-run scaffolding: creates `~/.config/credproxy/`, writes example config if none exists, touches log file (fixes crash on fresh install where log OpenFile ran before dir existed)
+- `--version` flag driven by `runtime/debug.ReadBuildInfo()` — tagged `go install` builds report the tag, local builds report a pseudo-version (`vX.Y.Z-0.<ts>-<sha>`, `+dirty` when applicable). No hardcoded version constant anywhere; cutting a new release is just tagging on a clean tree.
+- Docs split: README.md is the simple entrypoint (what/why/quickstart/anti-patterns); ADVANCED.md holds internals + full configuration reference. User-facing doc changes to advanced features go in ADVANCED.md, not README.
 - DB credential isolation: `[databases.*]` config entries start embedded
   auth-split relays at wrap time (in-process, no external binaries or
   containers); child gets a localhost-only URL with a random per-session
@@ -84,7 +86,7 @@ go install ./cmd/credproxy/  # install to ~/go/bin/credproxy
 
 ## Architecture
 
-- `internal/config/` — Host-keyed config with cascading merge (global + project .credproxy.toml)
+- `internal/config/` — Host-keyed config with cascading merge. Merge is exactly two layers: global + the single NEAREST `.credproxy.toml` walking up from cwd (no directory-chain cascade). `[env]` merges per-key; `[hosts.*]` and `[databases.*]` entries are whole-entry replacement (nearer scope wins the entire entry, fields never mix — enforced by validation requiring all fields)
 - `internal/resolver/` — Sentinel matching in headers, body, and query strings
 - `internal/mitm/` — MITM proxy for configured hosts, plain tunnel for unconfigured hosts, forward-proxy for absolute-URI requests
 - `internal/providers/` — 1Password CLI provider (op read)
