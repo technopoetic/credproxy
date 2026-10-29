@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/technopoetic/credproxy/internal/ca"
 	"github.com/technopoetic/credproxy/internal/config"
@@ -26,6 +27,7 @@ func main() {
 	profile := flag.String("profile", "", "config profile to activate")
 	sentinel := flag.String("sentinel", "CREDPROXY_TOKEN", "sentinel string to substitute")
 	openProxy := flag.Bool("open-proxy", false, "allow all hosts (not recommended)")
+	prefetch := flag.Bool("prefetch", false, "resolve all configured host credentials at startup (best with cache_ttl = \"session\")")
 	version := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 
@@ -73,8 +75,8 @@ func main() {
 		cfg.AllowAll()
 	}
 
-	if err := cfg.ValidateDatabases(); err != nil {
-		fmt.Fprintf(os.Stderr, "invalid database config: %v\n", err)
+	if err := cfg.Validate(); err != nil {
+		fmt.Fprintf(os.Stderr, "invalid config: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -90,6 +92,9 @@ func main() {
 	res := resolver.New(cfg, reg)
 	res.SetSentinel(*sentinel)
 
+	ttl := cfg.CacheDuration()
+	res.SetCacheTTL(ttl)
+
 	if err := cfg.ResolveEnv(context.Background(), res); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to resolve env credentials: %v\n", err)
 		os.Exit(1)
@@ -98,6 +103,16 @@ func main() {
 	if err := cfg.ResolveDatabasePasswords(context.Background(), res); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to resolve database credentials: %v\n", err)
 		os.Exit(1)
+	}
+
+	if *prefetch {
+		if ttl > 0 && ttl < 1*time.Hour {
+			fmt.Fprintf(os.Stderr, "warning: cache_ttl is under 1h; prefetched credentials will expire and be re-read mid-run\n")
+		}
+		if err := res.Prefetch(context.Background()); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to prefetch credentials: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	// runWrap returns the child's exit code rather than exiting itself: the

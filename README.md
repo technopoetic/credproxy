@@ -38,6 +38,8 @@ sudo update-ca-certificates
 
    The host key is the exact hostname from the URL — no scheme, no port, no path.
 
+   If one host needs more than one secret (for example Trello's key and token), add named credentials and reference them as `CREDPROXY_TOKEN:<name>`. Read the [named sentinel warnings](ADVANCED.md#named-sentinel-warnings) first: a misspelled name fails the request, and a URL-encoded colon (`%3A`) sends the default credential.
+
 2. Wrap your agent:
 
    ```bash
@@ -69,6 +71,8 @@ curl "https://api.unsplash.com/search/photos?query=dogs&client_id=CREDPROXY_TOKE
 curl -X POST https://api.stripe.com/v1/charges -d "api_key=CREDPROXY_TOKEN"
 ```
 
+If a host needs more than one secret, your instructions will name them, for example `CREDPROXY_TOKEN:token`. Use those names exactly as given, with a literal `:`. Do not URL-encode the colon (`%3A`); build the query string or body by hand rather than passing the value through a client that encodes it.
+
 **Do not** look up credentials via `op`, environment variables, config files, or any other source. `CREDPROXY_TOKEN` is the only credential you should ever use.
 
 If an API call returns 401/403, the target host is probably not configured in credproxy — report that rather than hunting for a real credential.
@@ -90,8 +94,9 @@ HTTP isn't the only leak. credproxy also keeps database passwords out of the age
 - **It's not a sandbox.** The agent can still read files, run commands, and reach the network. credproxy is credential isolation, not execution isolation — the two are complementary.
 - **It doesn't prevent misuse, only theft.** A compromised agent can still make authenticated API calls to your configured hosts. Use least-privilege credentials (read-only tokens, restricted keys) to limit the blast radius.
 - **Don't point your LLM provider at a configured host.** If your agent's LLM API and a credentialed host are the same hostname, credproxy substitutes the sentinel in the request body — including your agent instructions — and the real key lands in the agent's context. Use a different LLM provider for that session.
+- **A URL-encoded named sentinel doesn't fail closed.** `CREDPROXY_TOKEN%3A<name>` is read as the bare sentinel, so the host's default credential is sent with `%3A<name>` appended. Details in [ADVANCED.md](ADVANCED.md#named-sentinel-warnings).
 - **Don't put real secrets in `[env]`.** credproxy can resolve `op://` URIs into env vars at startup, but then the real credential lives in the child process's environment. That's there for tools that genuinely need it — not the default path. Database credentials in particular should go through the built-in relays instead (see [ADVANCED.md](ADVANCED.md)).
 
 ## More
 
-Advanced configuration — profiles, env var injection, per-project config, database credential isolation — plus the internals (MITM flow, resolver, security model): [ADVANCED.md](ADVANCED.md).
+Advanced configuration — named credentials, credential cache and `--prefetch`, profiles, env var injection, per-project config, database credential isolation — plus the internals (MITM flow, resolver, security model): [ADVANCED.md](ADVANCED.md).

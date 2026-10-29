@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -50,8 +51,7 @@ func (p *OnePasswordProvider) read(ctx context.Context, uri string) (string, err
 		return "", fmt.Errorf("op CLI not found on PATH: %w", err)
 	}
 
-	cmd := exec.CommandContext(ctx, opPath, "read", uri)
-	cmd.Args[0] = "credproxy-op"
+	cmd := p.buildCmd(ctx, opPath, uri, os.Environ())
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
@@ -60,4 +60,26 @@ func (p *OnePasswordProvider) read(ctx context.Context, uri string) (string, err
 		return "", fmt.Errorf("op read failed: %s: %w", strings.TrimSpace(stderr.String()), err)
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+func (p *OnePasswordProvider) buildCmd(ctx context.Context, opPath string, uri string, env []string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, opPath, "read", uri)
+	cmd.Args[0] = "credproxy-op"
+	cmd.Env = stripProxyEnv(env)
+	return cmd
+}
+
+func stripProxyEnv(env []string) []string {
+	filtered := make([]string, 0, len(env))
+	for _, e := range env {
+		key := strings.SplitN(e, "=", 2)[0]
+		switch strings.ToUpper(key) {
+		case "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY",
+			"SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE",
+			"NODE_EXTRA_CA_CERTS", "CURL_CA_BUNDLE":
+			continue
+		}
+		filtered = append(filtered, e)
+	}
+	return filtered
 }

@@ -28,7 +28,61 @@ $ credproxy opencode
 
 credproxy is the parent process. It loads config, starts the proxy, configures the child's environment, runs the agent, and cleans up on exit. No manual env vars, no port management. When the child exits, the proxy dies with it — real credentials only exist in credproxy's memory, for the lifetime of the session.
 
-The sentinel is substituted in headers, query strings, and request bodies. The agent doesn't know which credential goes where — it uses `CREDPROXY_TOKEN` for everything, and credproxy resolves the right secret based on the target host.
+The sentinel is substituted in headers, query strings, and request bodies. The agent never sees credential *values*. When a host needs a single credential, credproxy resolves the right secret based on the target host and the agent uses `CREDPROXY_TOKEN` for everything. Disambiguating between multiple credentials on one host is the one thing it must be told.
+
+When one host needs more than one secret in a session, declare named credentials alongside the default and reference them with `CREDPROXY_TOKEN:<name>`:
+
+```toml
+[hosts."api.trello.com"]
+credential = "op://Personal/trello-key/value"          # bare CREDPROXY_TOKEN
+
+[hosts."api.trello.com".credentials]
+token       = "op://Personal/trello-token/value"       # CREDPROXY_TOKEN:token
+agent-token = "op://Work/trello-agent-token/value"     # CREDPROXY_TOKEN:agent-token
+```
+
+Names are `[A-Za-z0-9_-]+` and case-sensitive. Credentials are resolved on first use, so an unused named credential never triggers a 1Password prompt.
+
+How a `:word` after the sentinel is read depends on whether the host has named credentials:
+
+- **Host has named credentials:** `:word` must match a configured name. An unmatched name (a typo, or a name dropped by a config overlay) fails the request with a 502, and nothing is sent upstream. The default credential is never substituted in its place.
+- **Host has no named credentials:** `:word` is literal text after the default credential. This keeps Basic auth with a fixed password working (`CREDPROXY_TOKEN:x-oauth-basic` becomes `<default>:x-oauth-basic`). If the host has no default credential either, the request fails with a 502.
+
+#### Named sentinel warnings
+
+- **Typos fail closed.** `CREDPROXY_TOKEN:agent_tokn` on a host with named credentials returns a 502 naming the unconfigured credential. Check `credproxy.log` for the name. This also catches a project overlay that redefines the host without repeating a named credential (see the cascade note below).
+- **Percent-encoded colons are not recognized.** Only a literal `:` selects a name. Clients that URL-encode query parameters or form bodies (Python `requests` with `params=` or `data=` dicts, `URLSearchParams`, `curl --data-urlencode`) turn `CREDPROXY_TOKEN:token` into `CREDPROXY_TOKEN%3Atoken`, which credproxy reads as the bare sentinel: the default credential is sent with `%3Atoken` appended. Build the query string or body by hand so the colon stays literal, or put named credentials in headers.
+- **Fixed Basic-auth passwords and named credentials don't mix.** On a host with named credentials, `CREDPROXY_TOKEN:x-oauth-basic` fails closed unless `x-oauth-basic` is a configured name, and if it is, the suffix selects that credential instead of passing through as the password. Keep fixed-password hosts free of named credentials.
+- **Longest name wins.** The name is everything after the colon that matches `[A-Za-z0-9_-]+`. With only `token` configured, `CREDPROXY_TOKEN:token2` is not a reference to `token`; it is an unmatched name and fails closed. Separate the sentinel from following text with a character outside that set.
+- **Resolved values are not encoded.** The secret is inserted exactly as stored. A secret containing `&`, `=`, `+`, `#`, `%` or spaces will corrupt a query string or form body. Store such secrets only for header use, or store them already encoded.
+- **The agent must be told the names.** The bare sentinel still needs no explanation, but the agent has no way to discover named credentials. List the names it may use (not the `op://` references) in its instructions.
+
+Note on config cascades: `[hosts.*]` entries are whole-entry replacements during cascading merges (global config + the nearest `.credproxy.toml`). A project-level overlay that adds one named credential to a host configured globally replaces that host's entire entry from global config — dropping the global default credential and any other named credentials for that host unless they are also declared in the project overlay. If a dropped default is referenced, the bare sentinel returns a 502 error ("no default credential configured").
+
+### Credential cache and prefetch
+
+Resolved credentials are cached in the proxy's memory, for 5 minutes by default. After that the next request reads the secret again, which can trigger a fresh 1Password prompt. For a long-running wrapped process such as a daemon, keep them for the life of the proxy instead:
+
+```toml
+cache_ttl = "session"   # or a duration such as "30m"; default is "5m"
+```
+
+With `session`, each credential is read once on first use and never refreshed, so a rotated secret is picked up only after you restart credproxy.
+
+To move the prompts to startup, add `--prefetch`:
+
+```
+credproxy --prefetch ./start_daemon.sh
+```
+
+credproxy then resolves every configured host credential, default and named, one at a time before starting the child, and exits with an error if any fails. Prefetch warns if `cache_ttl` is a short finite duration (less than 1 hour), because prefetched values would expire mid-run. Database passwords and `[env]` values are already resolved at startup.
+
+Prefetch warnings:
+
+- **It reads every host in the merged config**, not only the ones this run will call. Global hosts you never use in this project still cost a prompt, and one missing or renamed 1Password item stops startup. Keep prefetch for wraps whose config matches what they use (a project `.credproxy.toml` or a `--profile`).
+- **`[env]` values do not share the credential cache.** A secret referenced both in `[env]` and in a host entry is read twice, so you see two prompts even with `--prefetch` and `cache_ttl = "session"`.
+- **Empty values are skipped silently.** `credentials.foo = ""` passes config validation and is skipped by prefetch; the failure only appears later, mid-run, when `CREDPROXY_TOKEN:foo` is used.
+- **`session` never refreshes.** A secret rotated during the run keeps failing upstream until credproxy restarts.
 
 ## Configuration
 
@@ -68,6 +122,7 @@ The host key must be the exact hostname as it appears in the URL — full FQDN, 
 --config <path>          Override global config path
 --profile <name>         Select config profile (staging, production, etc.)
 --sentinel <string>      Sentinel string to substitute (default: CREDPROXY_TOKEN)
+--prefetch               Resolve all configured host credentials at startup (best with cache_ttl = "session")
 --open-proxy             Allow all hosts (not recommended)
 --version                Print version and exit
 ```
@@ -88,7 +143,7 @@ credproxy substitutes a sentinel string in headers, query strings, and request b
 | Digest auth | Won't work | Challenge-response: server nonce must be hashed with credentials |
 | NTLM / Kerberos | Won't work | Multi-round-trip handshake |
 | mTLS | Won't work | credproxy doesn't attach client certificates to upstream connections |
-| Two-secret APIs | Limited | Only one sentinel; works if `client_id` is public, not if both values are secret |
+| Two-secret APIs | Works | Use named credentials (`CREDPROXY_TOKEN:<name>`) for the second secret; see the named credential warnings above |
 
 ### Basic auth
 
@@ -110,6 +165,10 @@ curl -u "user@example.com:CREDPROXY_TOKEN" https://your-domain.atlassian.net/res
 credproxy sees `Basic dXNlckBleGFtcGxlLmNvbTpDUkVEUFJPWFlfVE9LRU4=`, decodes to `user@example.com:CREDPROXY_TOKEN`, substitutes, and re-encodes with the real token.
 
 **API key as username (empty password).** Some APIs (legacy Stripe, some Jenkins configs) treat the API key as the Basic auth username with no password. Use `CREDPROXY_TOKEN:` (empty password) as the curl `-u` argument — the sentinel will be substituted in the username position.
+
+**API key as username, fixed password.** Some APIs expect the key as the username and a fixed word as the password, for example GitHub's legacy `TOKEN:x-oauth-basic` or Freshdesk's `APIKEY:X`. Use `curl -u "CREDPROXY_TOKEN:x-oauth-basic"`. On a host with no named credentials, `x-oauth-basic` passes through as the literal password. If the host has named credentials, the unmatched suffix fails closed instead (see [Named sentinel warnings](#named-sentinel-warnings)).
+
+**Named credential in Basic auth.** `curl -u "user@example.com:CREDPROXY_TOKEN:token"` substitutes the `token` credential in the password slot. The name is matched after base64 decoding, so the encoded header needs no special handling.
 
 ## CA Certificate Trust
 
@@ -234,6 +293,12 @@ This is not a bug — the resolver is doing exactly what it's designed to do. Bu
 ### Zero introspection surface
 
 credproxy has no management API, no status endpoints, no CLI output containing real secrets, and no `/resolve` endpoint. The agent can send traffic through credproxy, but it cannot *ask* credproxy for secrets.
+
+### Provider environment sanitation
+
+When resolving `op://` URIs, credproxy executes the `op` CLI with a sanitized environment that strips proxy variables (`HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`, `NO_PROXY`) and custom CA certificate bundles (`SSL_CERT_FILE`, `SSL_CERT_DIR`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `CURL_CA_BUNDLE`). This ensures that 1Password CLI API traffic routes directly to 1Password rather than passing through an active proxy or trusting custom certificates.
+
+*Tradeoff:* Stripping `SSL_CERT_FILE` will cause `op` to fail TLS verification if it must operate behind an enterprise TLS-inspecting proxy that requires a corporate root certificate.
 
 ## Project Structure
 

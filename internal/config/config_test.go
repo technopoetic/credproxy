@@ -1011,3 +1011,166 @@ func TestValidateDatabasesMySQLParamConflict(t *testing.T) {
 		t.Fatal("expected error when use_ssl and sslmode are both set")
 	}
 }
+
+func TestCacheTTLDuration(t *testing.T) {
+	cases := []struct {
+		in      string
+		want    time.Duration
+		wantErr bool
+	}{
+		{"", DefaultCacheTTL, false},
+		{"session", SessionCacheTTL, false},
+		{"10m", 10 * time.Minute, false},
+		{"0s", 0, true},
+		{"-1m", 0, true},
+		{"soon", 0, true},
+	}
+	for _, tc := range cases {
+		got, err := (&Config{CacheTTL: tc.in}).CacheTTLDuration()
+		if (err != nil) != tc.wantErr || (!tc.wantErr && got != tc.want) {
+			t.Errorf("CacheTTLDuration(%q) = %v, %v; want %v, err=%v", tc.in, got, err, tc.want, tc.wantErr)
+		}
+	}
+}
+
+func TestCacheTTLSurvivesMergeAndProfile(t *testing.T) {
+	global := &Config{CacheTTL: "session"}
+	global.SetDefaults()
+	overlay := &Config{}
+	overlay.SetDefaults()
+
+	merged := global.Merge(overlay)
+	if merged.CacheTTL != "session" {
+		t.Errorf("merge without overlay value: CacheTTL = %q, want session", merged.CacheTTL)
+	}
+	overlay.CacheTTL = "1m"
+	if got := global.Merge(overlay).CacheTTL; got != "1m" {
+		t.Errorf("merge with overlay value: CacheTTL = %q, want 1m", got)
+	}
+	applied, err := merged.ApplyProfile("")
+	if err != nil || applied.CacheTTL != "session" {
+		t.Errorf("ApplyProfile: CacheTTL = %q, err = %v", applied.CacheTTL, err)
+	}
+}
+
+func TestAllCredentialURIsDedupesDefaultAndNamed(t *testing.T) {
+	c := &Config{Hosts: map[string]HostConfig{
+		"a.example": {Credential: "op://x/1", Credentials: map[string]string{"n": "op://x/2"}},
+		"b.example": {Credential: "op://x/1"},
+		"c.example": {},
+	}}
+	c.SetDefaults()
+	got := c.AllCredentialURIs()
+	want := []string{"op://x/1", "op://x/2"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("AllCredentialURIs = %v, want %v", got, want)
+	}
+}
+
+func TestValidateCredentials(t *testing.T) {
+	valid := &Config{
+		Hosts: map[string]HostConfig{
+			"api.example.com": {
+				Credentials: map[string]string{
+					"agent-token": "op://v/i/t",
+					"agent_key":   "op://v/i/k",
+					"Token123":    "op://v/i/1",
+				},
+			},
+		},
+		Profiles: map[string]ProfileConfig{
+			"work": {
+				Hosts: map[string]HostConfig{
+					"work.example.com": {
+						Credentials: map[string]string{
+							"valid_name-1": "op://v/i/w",
+						},
+					},
+				},
+			},
+		},
+	}
+	valid.SetDefaults()
+	if err := valid.ValidateCredentials(); err != nil {
+		t.Fatalf("unexpected error for valid credential names: %v", err)
+	}
+
+	invalidCases := []struct {
+		name string
+		host string
+		bad  string
+	}{
+		{"space in name", "api.example.com", "my key"},
+		{"dot in name", "api.example.com", "foo.bar"},
+		{"version with dot", "api.example.com", "v2.0"},
+		{"special character", "api.example.com", "bad$token"},
+		{"empty string", "api.example.com", ""},
+	}
+
+	for _, tc := range invalidCases {
+		cfg := &Config{
+			Hosts: map[string]HostConfig{
+				tc.host: {
+					Credentials: map[string]string{
+						tc.bad: "op://vault/item/field",
+					},
+				},
+			},
+		}
+		cfg.SetDefaults()
+		err := cfg.ValidateCredentials()
+		if err == nil {
+			t.Errorf("case %q: expected error for invalid credential name %q, got nil", tc.name, tc.bad)
+		}
+	}
+}
+
+func TestValidateConsolidated(t *testing.T) {
+	// Good config passes all validations.
+	good := &Config{
+		CacheTTL: "10m",
+		Hosts: map[string]HostConfig{
+			"api.example.com": {
+				Credential: "op://v/i/f",
+				Credentials: map[string]string{
+					"token": "op://v/i/t",
+				},
+			},
+		},
+	}
+	good.SetDefaults()
+	if err := good.Validate(); err != nil {
+		t.Fatalf("Validate: unexpected error: %v", err)
+	}
+	if got := good.CacheDuration(); got != 10*time.Minute {
+		t.Errorf("CacheDuration = %v, want 10m", got)
+	}
+
+	// Bad config catches database, credential name, and cache_ttl errors in one pass.
+	bad := &Config{
+		CacheTTL: "invalid-duration",
+		Hosts: map[string]HostConfig{
+			"api.example.com": {
+				Credentials: map[string]string{
+					"bad name": "op://v/i/t",
+				},
+			},
+		},
+		Databases: map[string]DatabaseConfig{
+			"db1": {
+				Engine: "invalid-engine",
+			},
+		},
+	}
+	bad.SetDefaults()
+	err := bad.Validate()
+	if err == nil {
+		t.Fatal("Validate: expected error for bad config, got nil")
+	}
+	msg := err.Error()
+	for _, expected := range []string{"engine must be", "credential name", "cache_ttl"} {
+		if !strings.Contains(msg, expected) {
+			t.Errorf("Validate error missing %q: %v", expected, msg)
+		}
+	}
+}
