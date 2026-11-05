@@ -1,5 +1,9 @@
 # credproxy — AGENTS.md
 
+## Workflow
+
+All changes go through a PR, even small ones -- never push directly to `main`. See CONTRIBUTING.md. No branch protection enforces this technically; it's a team convention. (Learned the hard way 2026-11-05: the Bitwarden provider work was pushed straight to main before this was documented anywhere.)
+
 ## Project State
 
 v2 core implementation complete and live-tested. Tagged v0.1.0:
