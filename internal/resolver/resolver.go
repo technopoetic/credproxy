@@ -1,11 +1,9 @@
 package resolver
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
-	"io"
 	"net/http"
 	"regexp"
 	"strings"
@@ -18,7 +16,6 @@ import (
 
 const defaultSentinel = "CREDPROXY_TOKEN"
 const prefetchTimeout = 30 * time.Second
-const maxBodySize = 10 * 1024 * 1024
 
 type cacheEntry struct {
 	value   string
@@ -104,12 +101,6 @@ func (r *Resolver) ResolveRequest(req *http.Request, host string) error {
 			return err
 		}
 		req.URL.RawQuery = query
-	}
-
-	if req.Body != nil && req.Body != http.NoBody {
-		if err := s.body(req); err != nil {
-			return fmt.Errorf("substituting body: %w", err)
-		}
 	}
 
 	return nil
@@ -214,29 +205,6 @@ func (s *substitution) encodedAuthHeader(val string) (string, bool, error) {
 		return "", false, nil
 	}
 	return strings.Join(tokens, " "), true, nil
-}
-
-func (s *substitution) body(req *http.Request) error {
-	body, err := io.ReadAll(io.LimitReader(req.Body, maxBodySize+1))
-	req.Body.Close()
-	if err != nil {
-		return fmt.Errorf("reading body: %w", err)
-	}
-	if len(body) > maxBodySize {
-		return fmt.Errorf("request body exceeds %d bytes", maxBodySize)
-	}
-
-	if s.r.re.Match(body) {
-		out, err := s.expand(string(body))
-		if err != nil {
-			return err
-		}
-		body = []byte(out)
-	}
-
-	req.Body = io.NopCloser(bytes.NewReader(body))
-	req.ContentLength = int64(len(body))
-	return nil
 }
 
 // expand replaces every sentinel occurrence in in. A request fails rather than

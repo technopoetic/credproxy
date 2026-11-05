@@ -65,26 +65,25 @@ func TestHeadersWithSentinelSubstituted(t *testing.T) {
 	}
 }
 
-func TestBodyWithSentinelSubstituted(t *testing.T) {
+func TestBodyWithSentinelPassesThroughUnchanged(t *testing.T) {
 	r := newTestResolver(
 		map[string]string{"api.stripe.com": "mock://stripe/key"},
 		map[string]string{"mock://stripe/key": "sk_live_abc"},
 	)
 
-	body := strings.NewReader(`{"api_key": "CREDPROXY_TOKEN"}`)
-	req := httptest.NewRequest(http.MethodPost, "https://api.stripe.com/charges", body)
+	original := `{"api_key": "CREDPROXY_TOKEN"}`
+	req := httptest.NewRequest(http.MethodPost, "https://api.stripe.com/charges", strings.NewReader(original))
 
-	err := r.ResolveRequest(req, "api.stripe.com")
-	if err != nil {
+	if err := r.ResolveRequest(req, "api.stripe.com"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	respBody, _ := io.ReadAll(req.Body)
-	if !bytes.Contains(respBody, []byte("sk_live_abc")) {
-		t.Errorf("body not substituted: got %q", string(respBody))
+	got, _ := io.ReadAll(req.Body)
+	if string(got) != original {
+		t.Errorf("body = %q, want unchanged %q", got, original)
 	}
-	if bytes.Contains(respBody, []byte("CREDPROXY_TOKEN")) {
-		t.Errorf("sentinel still present in body: %q", string(respBody))
+	if bytes.Contains(got, []byte("sk_live_abc")) {
+		t.Errorf("secret leaked into body: %q", got)
 	}
 }
 

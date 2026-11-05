@@ -10,7 +10,7 @@ v2 core implementation complete and live-tested. Tagged v0.1.0:
 - Env var injection from config (`[env]` and `[profiles.<name>.env]`)
 - `op://` URI resolution in env values at startup (resolves concurrently, 30s per-call timeout, fail-fast on error)
 - TLS tunneling for unconfigured hosts (CONNECT) and forward-proxy path (absolute URI) with HTTPS scheme preservation
-- Query string, header, and body substitution
+- Query string and header substitution (request bodies are never substituted: a sentinel in a body is forwarded as literal text)
 - CA cert env vars injected (SSL_CERT_FILE, REQUESTS_CA_BUNDLE, NODE_EXTRA_CA_CERTS, CURL_CA_BUNDLE), pointed at
   `trust-bundle.pem` — credproxy's CA cert followed by a vendored public root bundle (`internal/ca/mozilla-bundle.pem`),
   regenerated on every run via `Provider.WriteTrustBundle`. Fixes tools (gcloud, uv, HF Hub) that treat these vars as a
@@ -81,7 +81,6 @@ v2 core implementation complete and live-tested. Tagged v0.1.0:
 - Resolved values are inserted raw (no URL encoding); secrets with reserved characters corrupt query strings and form bodies.
 - `--prefetch` resolves every host in the merged config, including hosts unused by this run; `[env]` resolution bypasses the credential cache, so a secret used in both is read twice.
 - Logs go to `~/.config/credproxy/credproxy.log`, not stderr (avoids TUI ghosting)
-- Same-host LLM conflict: when the LLM provider host is also a configured credential host, credproxy substitutes the sentinel in the system prompt body on its way to the LLM, exposing the real credential. Mitigation: use a different LLM provider than the credential host. Documented in README (short form) and ADVANCED.md (full explanation). README is the simple entrypoint; ADVANCED.md holds advanced configuration and internals.
 
 ## How to Build & Test
 
@@ -96,7 +95,7 @@ go install ./cmd/credproxy/  # install to ~/go/bin/credproxy
 ## Architecture
 
 - `internal/config/` — Host-keyed config with cascading merge. Merge is exactly two layers: global + the single NEAREST `.credproxy.toml` walking up from cwd (no directory-chain cascade). `[env]` merges per-key; `[hosts.*]` and `[databases.*]` entries are whole-entry replacement (nearer scope wins the entire entry, fields never mix — enforced by validation requiring all fields)
-- `internal/resolver/` — Sentinel and named-sentinel matching in headers (incl. base64 Basic auth), body, and query strings; URI-keyed credential cache and prefetch
+- `internal/resolver/` — Sentinel and named-sentinel matching in headers (incl. base64 Basic auth) and query strings; URI-keyed credential cache and prefetch
 - `internal/mitm/` — MITM proxy for configured hosts, plain tunnel for unconfigured hosts, forward-proxy for absolute-URI requests
 - `internal/providers/` — 1Password CLI provider (op read)
 - `internal/dbrelay/` — Session relay lifecycle and child env computation
