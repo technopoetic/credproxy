@@ -286,7 +286,7 @@ func (c *Config) EnvVars() map[string]string {
 	return c.Env
 }
 
-// resolveURIs resolves every value in items that starts with "op://" through
+// resolveURIs resolves every value in items that looks like a provider URI through
 // r, concurrently, each with its own 30s deadline. apply writes a resolved
 // value back into the caller's structure. The first error fails the batch;
 // all errors are returned joined.
@@ -297,7 +297,7 @@ func resolveURIs(ctx context.Context, r EnvResolver, items map[string]string, la
 	}
 	var work []pending
 	for k, v := range items {
-		if strings.HasPrefix(v, "op://") {
+		if looksLikeCredentialURI(v) {
 			work = append(work, pending{key: k, uri: v})
 		}
 	}
@@ -336,7 +336,7 @@ func resolveURIs(ctx context.Context, r EnvResolver, items map[string]string, la
 	return errors.Join(errs...)
 }
 
-// ResolveEnv walks c.Env and resolves any value starting with "op://" through
+// ResolveEnv walks c.Env and resolves any value that looks like a provider URI through
 // the supplied EnvResolver, replacing the URI with the resolved secret. Other
 // values pass through untouched. Resolutions run concurrently; each call has
 // its own 30s deadline. The first resolution error fails the whole batch and
@@ -345,7 +345,7 @@ func (c *Config) ResolveEnv(ctx context.Context, r EnvResolver) error {
 	return resolveURIs(ctx, r, c.Env, "env", func(k, v string) { c.Env[k] = v })
 }
 
-// ResolveDatabasePasswords resolves op:// URIs in [databases.*] passwords at
+// ResolveDatabasePasswords resolves provider URIs in [databases.*] passwords at
 // startup, fail-fast, before any pooler is started with a broken credential.
 func (c *Config) ResolveDatabasePasswords(ctx context.Context, r EnvResolver) error {
 	uris := make(map[string]string, len(c.Databases))
@@ -465,6 +465,25 @@ func (c *Config) ValidateDatabases() error {
 }
 
 var validSentinelName = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+// credentialURISchemes are the provider URI prefixes resolveURIs will
+// attempt to resolve in [env] and [databases.*] values. This must list only
+// schemes a provider actually registers (op, bw) -- NOT "any value shaped
+// like a URI": an early version matched any `scheme://` generically, which
+// broke on an ordinary config value like CALDAV_URL = "https://dav.example"
+// (a ulr the user just wants passed through, not a credential reference),
+// turning it into a failed "unknown credential scheme" resolve attempt.
+// Add a new prefix here when a new provider is registered in main.go.
+var credentialURISchemes = []string{"op://", "bw://"}
+
+func looksLikeCredentialURI(v string) bool {
+	for _, scheme := range credentialURISchemes {
+		if strings.HasPrefix(v, scheme) {
+			return true
+		}
+	}
+	return false
+}
 
 func validateHostCredentials(host string, credentials map[string]string, prefix string) []error {
 	var errs []error

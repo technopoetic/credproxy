@@ -10,7 +10,7 @@ With credproxy, the only thing the agent can exfiltrate is `CREDPROXY_TOKEN`. Th
 
 ## Install
 
-Requires Go 1.21+ and the `op` CLI (1Password) for credential storage.
+Requires Go 1.21+ and a credential store CLI: `op` (1Password) and/or `bw` (Bitwarden), depending which `credential` scheme you use in config.
 
 ```bash
 go install github.com/technopoetic/credproxy/cmd/credproxy@latest
@@ -87,7 +87,7 @@ Auth that **doesn't** work: anything that signs the request or runs a challenge-
 
 ## Databases too
 
-HTTP isn't the only leak. credproxy also keeps database passwords out of the agent: for each database you configure, it starts a local relay that hands the child a localhost-only connection string with a random, session-scoped password. The relay opens the real connection upstream with the credential from 1Password. The real password exists only in credproxy's memory — never in the child's env, never on disk — and dies with the session. Postgres and MySQL are supported; config is in [ADVANCED.md](ADVANCED.md#database-credential-isolation).
+HTTP isn't the only leak. credproxy also keeps database passwords out of the agent: for each database you configure, it starts a local relay that hands the child a localhost-only connection string with a random, session-scoped password. The relay opens the real connection upstream with the credential resolved from your configured credential store. The real password exists only in credproxy's memory — never in the child's env, never on disk — and dies with the session. Postgres and MySQL are supported; config is in [ADVANCED.md](ADVANCED.md#database-credential-isolation).
 
 ## What credproxy doesn't do
 

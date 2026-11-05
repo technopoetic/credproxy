@@ -88,6 +88,7 @@ func main() {
 
 	reg := providers.NewRegistry()
 	reg.Register(providers.NewOnePasswordProvider())
+	reg.Register(providers.NewBitwardenProvider())
 
 	res := resolver.New(cfg, reg)
 	res.SetSentinel(*sentinel)

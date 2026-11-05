@@ -115,6 +115,24 @@ The host key must be the exact hostname as it appears in the URL — full FQDN, 
 | Scheme | Provider | Example |
 |--------|----------|---------|
 | `op://` | 1Password CLI | `op://Vault/item/field` |
+| `bw://` | Bitwarden CLI | `bw://password/item-name`, `bw://item/item-name/custom-field-name` |
+
+#### Bitwarden CLI (`bw://`)
+
+Unlike `op`, the `bw` CLI has no passwordless unlock path (no OS biometric/keychain integration, no service-account token that substitutes for the vault's master password at decrypt time). A vault session must already be unlocked, with the session key present in `BW_SESSION` in credproxy's own environment *before it starts* -- credproxy never runs `bw unlock` itself and never holds your master password. Resolution fails fast with a clear error if `BW_SESSION` is absent.
+
+```bash
+BW_SESSION=$(bw unlock --raw <<< "$PASSWORD") credproxy opencode
+```
+
+This feeds the master password to `bw unlock` via stdin (not a CLI arg, so it never appears in `ps`), captures the raw session key via command substitution, and sets `BW_SESSION` only for that one invocation -- it does not linger in your shell's exported environment afterward.
+
+Two URI shapes, mapped directly onto `bw get <object> <item>` rather than always going through `bw get item` + JSON parsing:
+
+- `bw://<object>/<item>` for `password`, `username`, `uri`, `totp`, or `notes` -- e.g. `bw://totp/github` runs `bw get totp github`. This matters most for `totp`: the live code is computed by the `bw` CLI itself from the stored seed, so this form reuses that rather than reimplementing TOTP.
+- `bw://item/<item>/<field-name>` for a custom field, which has no dedicated `get` verb -- this one does fetch `bw get item <item>` as JSON and look up the named field.
+
+**Known limitation:** if the vault auto-locks mid-session (idle timeout, policy-driven), every subsequent resolution fails until you re-run `bw unlock` and restart credproxy with a fresh `BW_SESSION` -- there is no automatic re-unlock.
 
 ### CLI flags
 

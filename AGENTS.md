@@ -29,6 +29,17 @@ v2 core implementation complete and live-tested. Tagged v0.1.0:
 - Named sentinels: `CREDPROXY_TOKEN:<name>` selects `[hosts."<host>".credentials].<name>`; names are `[A-Za-z0-9_-]+`, validated at startup by `Config.Validate()`. On a host with named credentials, an unmatched `:suffix` fails closed with a 502. On a host without named credentials, the suffix is literal text after the default credential (keeps Basic auth `TOKEN:x-oauth-basic` working); with no default credential either, the request fails closed.
 - Credential cache keyed by `op://` URI (not host): `cache_ttl` (default `5m`, a duration, or `session` stored as a zero-time expiry). `--prefetch` resolves every configured host credential sequentially at startup and exits on the first failure.
 - `op` provider runs with proxy and custom CA env vars (`HTTPS_PROXY`, `SSL_CERT_FILE`, etc.) stripped, so it does not route through credproxy or a stale trust bundle. Trade-off: `op` cannot use a corporate TLS-inspecting proxy that needs a custom root.
+- Bitwarden provider (`bw://`): `internal/providers/bitwarden.go`. Two URI shapes -- `bw://<object>/<item>` maps
+  directly onto `bw get <object> <item>` for object in {password, username, uri, totp, notes} (so `totp` reuses
+  the CLI's own live-code computation rather than reimplementing TOTP from a stored seed); `bw://item/<item>/<field>`
+  fetches `bw get item <item>` as JSON for a custom field, which has no dedicated `get` verb. Unlike `op`, `bw` has
+  no passwordless unlock path (no OS biometric/keychain integration, no service-account token) -- Resolve requires
+  `BW_SESSION` already present in the environment before wrap startup and fails fast if it is absent, rather than
+  auto-unlocking (which would mean holding the master password). Shares `stripProxyEnv` with the `op` provider; does
+  NOT rename argv[0] (no 1Password-style client-identity concept for `bw` to react to).
+- `[env]`/`[databases.*]` URI resolution (`resolveURIs` in `internal/config/config.go`) checks a `credentialURISchemes`
+  allowlist (`op://`, `bw://`), not "any value shaped like a URI": an ordinary config value like
+  `CALDAV_URL = "https://dav.example.com"` must pass through untouched rather than fail as an unresolvable credential.
 - DB credential isolation: `[databases.*]` config entries start embedded
   auth-split relays at wrap time (in-process, no external binaries or
   containers); child gets a localhost-only URL with a random per-session
@@ -75,6 +86,10 @@ v2 core implementation complete and live-tested. Tagged v0.1.0:
   only write `ca.pem`.
 
 - First `op read` call can cause TLS handshake timeout if 1Password auth prompt takes >30s. The credential caches after first resolution, so subsequent requests work.
+- Bitwarden sessions do not auto-renew: if the vault auto-locks mid-wrap (idle timeout or org policy), every
+  subsequent `bw://` resolution fails until the vault is unlocked again and the session is restarted with a fresh
+  `BW_SESSION`. There is no re-unlock path analogous to 1Password's biometric/service-account flow by design (see
+  Project State) -- adding one would mean credproxy holding the Bitwarden master password to call `bw unlock` itself.
 - 1Password biometric prompt shows "tmux" (not "credproxy-op") when running inside tmux — 1Password reads the controlling terminal, not argv[0]
 - Hosts with named credentials can't use a fixed Basic-auth password suffix (`TOKEN:x-oauth-basic`): the unmatched suffix fails closed. Fixed-password hosts must not configure named credentials.
 - Percent-encoded colons (`CREDPROXY_TOKEN%3Aname`) are not matched as named sentinels; the default credential is substituted and `%3Aname` passes through. Clients that URL-encode query/form values hit this.
@@ -98,7 +113,7 @@ go install ./cmd/credproxy/  # install to ~/go/bin/credproxy
 - `internal/config/` — Host-keyed config with cascading merge. Merge is exactly two layers: global + the single NEAREST `.credproxy.toml` walking up from cwd (no directory-chain cascade). `[env]` merges per-key; `[hosts.*]` and `[databases.*]` entries are whole-entry replacement (nearer scope wins the entire entry, fields never mix — enforced by validation requiring all fields)
 - `internal/resolver/` — Sentinel and named-sentinel matching in headers (incl. base64 Basic auth), body, and query strings; URI-keyed credential cache and prefetch
 - `internal/mitm/` — MITM proxy for configured hosts, plain tunnel for unconfigured hosts, forward-proxy for absolute-URI requests
-- `internal/providers/` — 1Password CLI provider (op read)
+- `internal/providers/` — 1Password (`op read`) and Bitwarden (`bw get`) CLI providers
 - `internal/dbrelay/` — Session relay lifecycle and child env computation
 - `internal/dbproxy/` — Embedded auth-split relay: shared byte pipe, Postgres and MySQL handshakes
 - `internal/ca/` — Self-signed CA + per-host leaf cert minting
