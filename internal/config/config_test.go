@@ -30,6 +30,9 @@ credential = "op://Business/stripe-live/key"
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
+	if !cfg.ResolveBody {
+		t.Fatal("resolve_body should default to enabled")
+	}
 
 	uri, ok := cfg.GetCredentialURI("api.github.com")
 	if !ok {
@@ -51,6 +54,8 @@ func TestMergeProjectOverlaysGlobal(t *testing.T) {
 	globalDir := t.TempDir()
 	globalPath := filepath.Join(globalDir, "config.toml")
 	globalContent := `
+resolve_body = true
+
 [hosts."api.github.com"]
 credential = "op://Personal/github-pat/token"
 
@@ -84,6 +89,9 @@ credential = "op://Work/github-enterprise/token"
 	}
 
 	merged := global.Merge(project)
+	if !merged.ResolveBody {
+		t.Error("resolve_body should be preserved from global config")
+	}
 
 	uri, ok := merged.GetCredentialURI("api.github.com")
 	if !ok {
@@ -107,6 +115,28 @@ credential = "op://Work/github-enterprise/token"
 	}
 	if uri != "op://shipstops/Unsplash app creds/Access Key" {
 		t.Errorf("merged api.unsplash.com = %q, want project value", uri)
+	}
+}
+
+func TestMergeProjectCanDisableResolveBody(t *testing.T) {
+	globalPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(globalPath, []byte("resolve_body = true\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	projectPath := filepath.Join(t.TempDir(), ".credproxy.toml")
+	if err := os.WriteFile(projectPath, []byte("resolve_body = false\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	global, err := Load(globalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := Load(projectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if merged := global.Merge(project); merged.ResolveBody {
+		t.Error("explicit project resolve_body = false should override global true")
 	}
 }
 
@@ -265,6 +295,7 @@ PORT = "443"
 
 func TestApplyProfileOverridesHosts(t *testing.T) {
 	cfg := &Config{
+		ResolveBody: true,
 		Hosts: map[string]HostConfig{
 			"api.stripe.com": {Credential: "op://Business/stripe-live/key"},
 			"api.github.com": {Credential: "op://Personal/github-pat/token"},
@@ -285,6 +316,9 @@ func TestApplyProfileOverridesHosts(t *testing.T) {
 	result, err := cfg.ApplyProfile("staging")
 	if err != nil {
 		t.Fatalf("ApplyProfile: %v", err)
+	}
+	if !result.ResolveBody {
+		t.Error("resolve_body should be preserved when applying a profile")
 	}
 
 	uri, ok := result.GetCredentialURI("api.stripe.com")

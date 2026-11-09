@@ -10,7 +10,7 @@ v2 core implementation complete and live-tested. Tagged v0.1.0:
 - Env var injection from config (`[env]` and `[profiles.<name>.env]`)
 - `op://` URI resolution in env values at startup (resolves concurrently, 30s per-call timeout, fail-fast on error)
 - TLS tunneling for unconfigured hosts (CONNECT) and forward-proxy path (absolute URI) with HTTPS scheme preservation
-- Query string and header substitution (request bodies are never substituted: a sentinel in a body is forwarded as literal text)
+- Query string and header substitution; request-body substitution is enabled by default and can be disabled globally with root-level `resolve_body = false`
 - CA cert env vars injected (SSL_CERT_FILE, REQUESTS_CA_BUNDLE, NODE_EXTRA_CA_CERTS, CURL_CA_BUNDLE), pointed at
   `trust-bundle.pem` — credproxy's CA cert followed by a vendored public root bundle (`internal/ca/mozilla-bundle.pem`),
   regenerated on every run via `Provider.WriteTrustBundle`. Fixes tools (gcloud, uv, HF Hub) that treat these vars as a

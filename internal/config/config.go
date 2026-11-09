@@ -32,6 +32,7 @@ const envResolveTimeout = 30 * time.Second
 type HostConfig struct {
 	Credential  string            `toml:"credential"`
 	Credentials map[string]string `toml:"credentials"`
+	ResolveBody bool              `toml:"resolve_body"`
 }
 
 type ProfileConfig struct {
@@ -55,6 +56,8 @@ type DatabaseConfig struct {
 }
 
 type Config struct {
+	ResolveBody    bool `toml:"resolve_body"`
+	resolveBodySet bool
 	// CacheTTL is how long a resolved credential stays cached: a Go duration
 	// ("10m"), or "session" to keep it for the life of the proxy. Empty means
 	// DefaultCacheTTL.
@@ -141,14 +144,19 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("reading config: %w", err)
 	}
 	var cfg Config
-	if err := toml.Unmarshal(data, &cfg); err != nil {
+	metadata, err := toml.Decode(string(data), &cfg)
+	if err != nil {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
+	cfg.resolveBodySet = metadata.IsDefined("resolve_body")
 	cfg.SetDefaults()
 	return &cfg, nil
 }
 
 func (c *Config) SetDefaults() {
+	if !c.resolveBodySet {
+		c.ResolveBody = true
+	}
 	if c.Hosts == nil {
 		c.Hosts = make(map[string]HostConfig)
 	}
@@ -181,12 +189,18 @@ func (c *Config) SetDefaults() {
 
 func (c *Config) Merge(overlay *Config) *Config {
 	merged := &Config{
-		CacheTTL:  c.CacheTTL,
-		Env:       make(map[string]string, len(c.Env)+len(overlay.Env)),
-		Hosts:     make(map[string]HostConfig, len(c.Hosts)+len(overlay.Hosts)),
-		Databases: make(map[string]DatabaseConfig, len(c.Databases)+len(overlay.Databases)),
-		Profiles:  make(map[string]ProfileConfig, len(c.Profiles)+len(overlay.Profiles)),
-		hostsSet:  make(map[string]bool, len(c.Hosts)+len(overlay.Hosts)),
+		ResolveBody:    c.ResolveBody,
+		resolveBodySet: c.resolveBodySet,
+		CacheTTL:       c.CacheTTL,
+		Env:            make(map[string]string, len(c.Env)+len(overlay.Env)),
+		Hosts:          make(map[string]HostConfig, len(c.Hosts)+len(overlay.Hosts)),
+		Databases:      make(map[string]DatabaseConfig, len(c.Databases)+len(overlay.Databases)),
+		Profiles:       make(map[string]ProfileConfig, len(c.Profiles)+len(overlay.Profiles)),
+		hostsSet:       make(map[string]bool, len(c.Hosts)+len(overlay.Hosts)),
+	}
+	if overlay.resolveBodySet {
+		merged.ResolveBody = overlay.ResolveBody
+		merged.resolveBodySet = true
 	}
 	if overlay.CacheTTL != "" {
 		merged.CacheTTL = overlay.CacheTTL
@@ -376,12 +390,14 @@ func (c *Config) ApplyProfile(name string) (*Config, error) {
 		return nil, fmt.Errorf("profile %q not found; available: %v", name, c.ProfileNames())
 	}
 	result := &Config{
-		CacheTTL:  c.CacheTTL,
-		Env:       make(map[string]string, len(c.Env)+len(profile.Env)),
-		Hosts:     make(map[string]HostConfig, len(c.Hosts)+len(profile.Hosts)),
-		Databases: make(map[string]DatabaseConfig, len(c.Databases)+len(profile.Databases)),
-		Profiles:  c.Profiles,
-		hostsSet:  make(map[string]bool, len(c.Hosts)+len(profile.Hosts)),
+		ResolveBody:    c.ResolveBody,
+		resolveBodySet: c.resolveBodySet,
+		CacheTTL:       c.CacheTTL,
+		Env:            make(map[string]string, len(c.Env)+len(profile.Env)),
+		Hosts:          make(map[string]HostConfig, len(c.Hosts)+len(profile.Hosts)),
+		Databases:      make(map[string]DatabaseConfig, len(c.Databases)+len(profile.Databases)),
+		Profiles:       c.Profiles,
+		hostsSet:       make(map[string]bool, len(c.Hosts)+len(profile.Hosts)),
 	}
 	for k, v := range c.Env {
 		result.Env[k] = v

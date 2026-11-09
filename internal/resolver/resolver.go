@@ -1,9 +1,11 @@
 package resolver
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"net/http"
 	"regexp"
 	"strings"
@@ -88,6 +90,7 @@ func (r *Resolver) ResolveRequest(req *http.Request, host string) error {
 	if !ok {
 		return nil
 	}
+	hostConfig := r.cfg.Hosts[host]
 
 	s := &substitution{r: r, ctx: req.Context(), host: host, uris: uris}
 
@@ -101,6 +104,26 @@ func (r *Resolver) ResolveRequest(req *http.Request, host string) error {
 			return err
 		}
 		req.URL.RawQuery = query
+	}
+	if (r.cfg.ResolveBody || hostConfig.ResolveBody) && req.Body != nil && req.Body != http.NoBody {
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			return fmt.Errorf("read request body: %w", err)
+		}
+		if r.re.Match(body) {
+			resolved, err := s.expand(string(body))
+			if err != nil {
+				return err
+			}
+			body = []byte(resolved)
+		}
+		_ = req.Body.Close()
+		bodyCopy := append([]byte(nil), body...)
+		req.Body = io.NopCloser(bytes.NewReader(bodyCopy))
+		req.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(bodyCopy)), nil
+		}
+		req.ContentLength = int64(len(bodyCopy))
 	}
 
 	return nil

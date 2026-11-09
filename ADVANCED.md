@@ -28,7 +28,7 @@ $ credproxy opencode
 
 credproxy is the parent process. It loads config, starts the proxy, configures the child's environment, runs the agent, and cleans up on exit. No manual env vars, no port management. When the child exits, the proxy dies with it — real credentials only exist in credproxy's memory, for the lifetime of the session.
 
-The sentinel is substituted in headers, query strings, and request bodies. The agent never sees credential *values*. When a host needs a single credential, credproxy resolves the right secret based on the target host and the agent uses `CREDPROXY_TOKEN` for everything. Disambiguating between multiple credentials on one host is the one thing it must be told.
+The sentinel is substituted in headers and query strings. Request-body substitution is enabled by default and can be disabled globally with the root-level `resolve_body = false`. It can also be enabled for an individual host when the global setting is false by setting `resolve_body = true` inside that host's `[hosts."example.com"]` section. The agent never sees credential *values*. When a host needs a single credential, credproxy resolves the right secret based on the target host and the agent uses `CREDPROXY_TOKEN` for everything. Disambiguating between multiple credentials on one host is the one thing it must be told.
 
 When one host needs more than one secret in a session, declare named credentials alongside the default and reference them with `CREDPROXY_TOKEN:<name>`:
 
@@ -131,7 +131,7 @@ The version string comes from Go's embedded build info: installs via `go install
 
 ## Auth Compatibility
 
-credproxy substitutes a sentinel string in headers, query strings, and request bodies. This works for any auth scheme where the credential is a static value injected into a request. It does not work for schemes that compute a signature or require a challenge-response handshake.
+credproxy substitutes a sentinel string in headers, query strings, and request bodies by default. Set `resolve_body = false` to forward request bodies unchanged. This works for any auth scheme where the credential is a static value injected into a request. It does not work for schemes that compute a signature or require a challenge-response handshake.
 
 | Auth scheme | Status | Notes |
 |-------------|--------|-------|
@@ -282,9 +282,23 @@ The child sees `DATABASE_URL=postgres://app_user:<random>@127.0.0.1:<port>/mydb?
 - **Determined attacker with known paths** — if the agent knows the absolute path to `op` and the `OP_SERVICE_ACCOUNT_TOKEN`, it can bypass credproxy. credproxy strips both.
 - **1Password app integration** — if the 1Password desktop app is running with biometric auth, `op read` surfaces an authorization prompt. This is a user-visible backstop, not a bypass.
 
-### Request bodies are never substituted
+### Request bodies
 
-credproxy substitutes sentinels in headers and query strings only. A sentinel in a request body is forwarded as literal text and never triggers a credential lookup, so it cannot fail a request. This also means an LLM provider that shares a hostname with a credentialed host does not receive real credentials in prompts, and agent replies that mention `CREDPROXY_TOKEN` post normally.
+Request-body substitution is enabled by default. To disable it globally, set the root-level option:
+
+```toml
+resolve_body = false
+```
+
+When global substitution is disabled, it can still be enabled for a specific host by setting `resolve_body = true` in that host's configuration:
+
+```toml
+[hosts."api.example.com"]
+credential = "op://Private/example-api/key"
+resolve_body = true
+```
+
+Body sentinels use the same default and named credential rules as headers and query strings. Unknown named credentials fail the request. This option buffers the full request body in memory. Disabling it also prevents an LLM provider that shares a hostname with a credentialed host from receiving real credentials in prompts, and lets agent replies mentioning `CREDPROXY_TOKEN` post normally.
 
 ### Zero introspection surface
 

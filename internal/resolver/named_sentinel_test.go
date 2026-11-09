@@ -69,6 +69,7 @@ func TestNamedSentinelInHeaderSubstituted(t *testing.T) {
 
 func TestNamedSentinelInBodyPassesThroughUnchanged(t *testing.T) {
 	r := newNamedTestResolver(trelloHost(), trelloCreds)
+	r.cfg.ResolveBody = false
 
 	original := `{"token": "CREDPROXY_TOKEN:agent-token", "key": "CREDPROXY_TOKEN"}`
 	req := httptest.NewRequest(http.MethodPost, "https://api.trello.com/1/cards", strings.NewReader(original))
@@ -84,6 +85,7 @@ func TestNamedSentinelInBodyPassesThroughUnchanged(t *testing.T) {
 
 func TestUnknownNamedSentinelInBodyDoesNotFailRequest(t *testing.T) {
 	r := newNamedTestResolver(trelloHost(), trelloCreds)
+	r.cfg.ResolveBody = false
 
 	original := "text=Use CREDPROXY_TOKEN:bogus_key as the placeholder"
 	req := httptest.NewRequest(http.MethodPost, "https://api.trello.com/1/cards/abc/actions/comments", strings.NewReader(original))
