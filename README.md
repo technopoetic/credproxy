@@ -46,7 +46,7 @@ sudo update-ca-certificates
    cd ~/code/myproject && credproxy opencode
    ```
 
-3. The agent uses `CREDPROXY_TOKEN` wherever a key is expected — header, query string, or request body. credproxy intercepts the outbound request, substitutes the real credential for that host, and forwards it on.
+3. The agent uses `CREDPROXY_TOKEN` wherever a key is expected — header or query string. credproxy intercepts the outbound request, substitutes the real credential for that host, and forwards it on.
 
 The final step is telling the agent the rule. Add this block to your `AGENTS.md` or project instructions:
 
@@ -56,7 +56,7 @@ The final step is telling the agent the rule. Add this block to your `AGENTS.md`
 
 A local MITM proxy intercepts your outbound HTTPS traffic and injects real API credentials automatically. **You never handle real credentials.**
 
-**The rule:** Use the literal string `CREDPROXY_TOKEN` wherever an API key, token, or secret goes — header, query string, or request body. The proxy replaces it with the real value before the request reaches the server.
+**The rule:** Use the literal string `CREDPROXY_TOKEN` wherever an API key, token, or secret goes — header or query string. The proxy replaces it with the real value before the request reaches the server. Request bodies are never modified, so a sentinel in a body is sent as literal text.
 
 `$CREDPROXY_TOKEN` in the environment expands to `CREDPROXY_TOKEN`, so both forms are equivalent:
 
@@ -66,12 +66,9 @@ curl -H "Authorization: Bearer CREDPROXY_TOKEN" https://api.github.com/user
 
 # Query string
 curl "https://api.unsplash.com/search/photos?query=dogs&client_id=CREDPROXY_TOKEN"
-
-# Request body
-curl -X POST https://api.stripe.com/v1/charges -d "api_key=CREDPROXY_TOKEN"
 ```
 
-If a host needs more than one secret, your instructions will name them, for example `CREDPROXY_TOKEN:token`. Use those names exactly as given, with a literal `:`. Do not URL-encode the colon (`%3A`); build the query string or body by hand rather than passing the value through a client that encodes it.
+If a host needs more than one secret, your instructions will name them, for example `CREDPROXY_TOKEN:token`. Use those names exactly as given, with a literal `:`. Do not URL-encode the colon (`%3A`); build the query string by hand rather than passing the value through a client that encodes it.
 
 **Do not** look up credentials via `op`, environment variables, config files, or any other source. `CREDPROXY_TOKEN` is the only credential you should ever use.
 
@@ -93,7 +90,6 @@ HTTP isn't the only leak. credproxy also keeps database passwords out of the age
 
 - **It's not a sandbox.** The agent can still read files, run commands, and reach the network. credproxy is credential isolation, not execution isolation — the two are complementary.
 - **It doesn't prevent misuse, only theft.** A compromised agent can still make authenticated API calls to your configured hosts. Use least-privilege credentials (read-only tokens, restricted keys) to limit the blast radius.
-- **Don't point your LLM provider at a configured host.** If your agent's LLM API and a credentialed host are the same hostname, credproxy substitutes the sentinel in the request body — including your agent instructions — and the real key lands in the agent's context. Use a different LLM provider for that session.
 - **A URL-encoded named sentinel doesn't fail closed.** `CREDPROXY_TOKEN%3A<name>` is read as the bare sentinel, so the host's default credential is sent with `%3A<name>` appended. Details in [ADVANCED.md](ADVANCED.md#named-sentinel-warnings).
 - **Don't put real secrets in `[env]`.** credproxy can resolve `op://` URIs into env vars at startup, but then the real credential lives in the child process's environment. That's there for tools that genuinely need it — not the default path. Database credentials in particular should go through the built-in relays instead (see [ADVANCED.md](ADVANCED.md)).
 

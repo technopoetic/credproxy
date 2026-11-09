@@ -18,7 +18,6 @@ import (
 
 const defaultSentinel = "CREDPROXY_TOKEN"
 const prefetchTimeout = 30 * time.Second
-const maxBodySize = 10 * 1024 * 1024
 
 type cacheEntry struct {
 	value   string
@@ -91,6 +90,7 @@ func (r *Resolver) ResolveRequest(req *http.Request, host string) error {
 	if !ok {
 		return nil
 	}
+	hostConfig := r.cfg.Hosts[host]
 
 	s := &substitution{r: r, ctx: req.Context(), host: host, uris: uris}
 
@@ -105,11 +105,25 @@ func (r *Resolver) ResolveRequest(req *http.Request, host string) error {
 		}
 		req.URL.RawQuery = query
 	}
-
-	if req.Body != nil && req.Body != http.NoBody {
-		if err := s.body(req); err != nil {
-			return fmt.Errorf("substituting body: %w", err)
+	if (r.cfg.ResolveBody || hostConfig.ResolveBody) && req.Body != nil && req.Body != http.NoBody {
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			return fmt.Errorf("read request body: %w", err)
 		}
+		if r.re.Match(body) {
+			resolved, err := s.expand(string(body))
+			if err != nil {
+				return err
+			}
+			body = []byte(resolved)
+		}
+		_ = req.Body.Close()
+		bodyCopy := append([]byte(nil), body...)
+		req.Body = io.NopCloser(bytes.NewReader(bodyCopy))
+		req.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(bodyCopy)), nil
+		}
+		req.ContentLength = int64(len(bodyCopy))
 	}
 
 	return nil
@@ -214,29 +228,6 @@ func (s *substitution) encodedAuthHeader(val string) (string, bool, error) {
 		return "", false, nil
 	}
 	return strings.Join(tokens, " "), true, nil
-}
-
-func (s *substitution) body(req *http.Request) error {
-	body, err := io.ReadAll(io.LimitReader(req.Body, maxBodySize+1))
-	req.Body.Close()
-	if err != nil {
-		return fmt.Errorf("reading body: %w", err)
-	}
-	if len(body) > maxBodySize {
-		return fmt.Errorf("request body exceeds %d bytes", maxBodySize)
-	}
-
-	if s.r.re.Match(body) {
-		out, err := s.expand(string(body))
-		if err != nil {
-			return err
-		}
-		body = []byte(out)
-	}
-
-	req.Body = io.NopCloser(bytes.NewReader(body))
-	req.ContentLength = int64(len(body))
-	return nil
 }
 
 // expand replaces every sentinel occurrence in in. A request fails rather than

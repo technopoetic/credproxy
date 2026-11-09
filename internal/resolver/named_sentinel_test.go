@@ -67,19 +67,35 @@ func TestNamedSentinelInHeaderSubstituted(t *testing.T) {
 	}
 }
 
-func TestNamedSentinelInBodySubstituted(t *testing.T) {
+func TestNamedSentinelInBodyPassesThroughUnchanged(t *testing.T) {
 	r := newNamedTestResolver(trelloHost(), trelloCreds)
+	r.cfg.ResolveBody = false
 
-	body := strings.NewReader(`{"token": "CREDPROXY_TOKEN:agent-token", "key": "CREDPROXY_TOKEN"}`)
-	req := httptest.NewRequest(http.MethodPost, "https://api.trello.com/1/cards", body)
+	original := `{"token": "CREDPROXY_TOKEN:agent-token", "key": "CREDPROXY_TOKEN"}`
+	req := httptest.NewRequest(http.MethodPost, "https://api.trello.com/1/cards", strings.NewReader(original))
 	if err := r.ResolveRequest(req, "api.trello.com"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	got, _ := io.ReadAll(req.Body)
-	want := `{"token": "agent-token-value", "key": "key-value"}`
-	if string(got) != want {
-		t.Errorf("body = %q, want %q", got, want)
+	if string(got) != original {
+		t.Errorf("body = %q, want unchanged %q", got, original)
+	}
+}
+
+func TestUnknownNamedSentinelInBodyDoesNotFailRequest(t *testing.T) {
+	r := newNamedTestResolver(trelloHost(), trelloCreds)
+	r.cfg.ResolveBody = false
+
+	original := "text=Use CREDPROXY_TOKEN:bogus_key as the placeholder"
+	req := httptest.NewRequest(http.MethodPost, "https://api.trello.com/1/cards/abc/actions/comments", strings.NewReader(original))
+	if err := r.ResolveRequest(req, "api.trello.com"); err != nil {
+		t.Fatalf("body text mentioning a sentinel must not fail the request: %v", err)
+	}
+
+	got, _ := io.ReadAll(req.Body)
+	if string(got) != original {
+		t.Errorf("body = %q, want unchanged %q", got, original)
 	}
 }
 

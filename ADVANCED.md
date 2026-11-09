@@ -28,7 +28,7 @@ $ credproxy opencode
 
 credproxy is the parent process. It loads config, starts the proxy, configures the child's environment, runs the agent, and cleans up on exit. No manual env vars, no port management. When the child exits, the proxy dies with it — real credentials only exist in credproxy's memory, for the lifetime of the session.
 
-The sentinel is substituted in headers, query strings, and request bodies. The agent never sees credential *values*. When a host needs a single credential, credproxy resolves the right secret based on the target host and the agent uses `CREDPROXY_TOKEN` for everything. Disambiguating between multiple credentials on one host is the one thing it must be told.
+The sentinel is substituted in headers and query strings. Request-body substitution is enabled by default and can be disabled globally with the root-level `resolve_body = false`. It can also be enabled for an individual host when the global setting is false by setting `resolve_body = true` inside that host's `[hosts."example.com"]` section. The agent never sees credential *values*. When a host needs a single credential, credproxy resolves the right secret based on the target host and the agent uses `CREDPROXY_TOKEN` for everything. Disambiguating between multiple credentials on one host is the one thing it must be told.
 
 When one host needs more than one secret in a session, declare named credentials alongside the default and reference them with `CREDPROXY_TOKEN:<name>`:
 
@@ -51,10 +51,10 @@ How a `:word` after the sentinel is read depends on whether the host has named c
 #### Named sentinel warnings
 
 - **Typos fail closed.** `CREDPROXY_TOKEN:agent_tokn` on a host with named credentials returns a 502 naming the unconfigured credential. Check `credproxy.log` for the name. This also catches a project overlay that redefines the host without repeating a named credential (see the cascade note below).
-- **Percent-encoded colons are not recognized.** Only a literal `:` selects a name. Clients that URL-encode query parameters or form bodies (Python `requests` with `params=` or `data=` dicts, `URLSearchParams`, `curl --data-urlencode`) turn `CREDPROXY_TOKEN:token` into `CREDPROXY_TOKEN%3Atoken`, which credproxy reads as the bare sentinel: the default credential is sent with `%3Atoken` appended. Build the query string or body by hand so the colon stays literal, or put named credentials in headers.
+- **Percent-encoded colons are not recognized.** Only a literal `:` selects a name. Clients that URL-encode query parameters (Python `requests` with `params=`, `URLSearchParams`, `curl --data-urlencode`) turn `CREDPROXY_TOKEN:token` into `CREDPROXY_TOKEN%3Atoken`, which credproxy reads as the bare sentinel: the default credential is sent with `%3Atoken` appended. Build the query string by hand so the colon stays literal, or put named credentials in headers.
 - **Fixed Basic-auth passwords and named credentials don't mix.** On a host with named credentials, `CREDPROXY_TOKEN:x-oauth-basic` fails closed unless `x-oauth-basic` is a configured name, and if it is, the suffix selects that credential instead of passing through as the password. Keep fixed-password hosts free of named credentials.
 - **Longest name wins.** The name is everything after the colon that matches `[A-Za-z0-9_-]+`. With only `token` configured, `CREDPROXY_TOKEN:token2` is not a reference to `token`; it is an unmatched name and fails closed. Separate the sentinel from following text with a character outside that set.
-- **Resolved values are not encoded.** The secret is inserted exactly as stored. A secret containing `&`, `=`, `+`, `#`, `%` or spaces will corrupt a query string or form body. Store such secrets only for header use, or store them already encoded.
+- **Resolved values are not encoded.** The secret is inserted exactly as stored. A secret containing `&`, `=`, `+`, `#`, `%` or spaces will corrupt a query string. Store such secrets only for header use, or store them already encoded.
 - **The agent must be told the names.** The bare sentinel still needs no explanation, but the agent has no way to discover named credentials. List the names it may use (not the `op://` references) in its instructions.
 
 Note on config cascades: `[hosts.*]` entries are whole-entry replacements during cascading merges (global config + the nearest `.credproxy.toml`). A project-level overlay that adds one named credential to a host configured globally replaces that host's entire entry from global config — dropping the global default credential and any other named credentials for that host unless they are also declared in the project overlay. If a dropped default is referenced, the bare sentinel returns a 502 error ("no default credential configured").
@@ -149,7 +149,7 @@ The version string comes from Go's embedded build info: installs via `go install
 
 ## Auth Compatibility
 
-credproxy substitutes a sentinel string in headers, query strings, and request bodies. This works for any auth scheme where the credential is a static value injected into a request. It does not work for schemes that compute a signature or require a challenge-response handshake.
+credproxy substitutes a sentinel string in headers, query strings, and request bodies by default. Set `resolve_body = false` to forward request bodies unchanged. This works for any auth scheme where the credential is a static value injected into a request. It does not work for schemes that compute a signature or require a challenge-response handshake.
 
 | Auth scheme | Status | Notes |
 |-------------|--------|-------|
@@ -300,13 +300,23 @@ The child sees `DATABASE_URL=postgres://app_user:<random>@127.0.0.1:<port>/mydb?
 - **Determined attacker with known paths** — if the agent knows the absolute path to `op` and the `OP_SERVICE_ACCOUNT_TOKEN`, it can bypass credproxy. credproxy strips both.
 - **1Password app integration** — if the 1Password desktop app is running with biometric auth, `op read` surfaces an authorization prompt. This is a user-visible backstop, not a bypass.
 
-### Same-host LLM conflict
+### Request bodies
 
-When the LLM provider host and a configured credential host are the same (e.g., your project uses `api.minimax.io` as both the LLM API and a third-party service API), credproxy will MITM the LLM requests too. The sentinel substitution is indiscriminate — it replaces `CREDPROXY_TOKEN` everywhere in the request body, including the system prompt. The LLM will receive your agent instructions with the real credential value substituted where the sentinel appeared.
+Request-body substitution is enabled by default. To disable it globally, set the root-level option:
 
-This is not a bug — the resolver is doing exactly what it's designed to do. But it means the agent will see the real credential value in its system prompt, violating the core isolation guarantee.
+```toml
+resolve_body = false
+```
 
-**Mitigation:** Use a different LLM provider than the one configured as a credential host. If your project calls `api.minimax.io` as a third-party API, don't use MiniMax as your LLM provider in the same credproxy session.
+When global substitution is disabled, it can still be enabled for a specific host by setting `resolve_body = true` in that host's configuration:
+
+```toml
+[hosts."api.example.com"]
+credential = "op://Private/example-api/key"
+resolve_body = true
+```
+
+Body sentinels use the same default and named credential rules as headers and query strings. Unknown named credentials fail the request. This option buffers the full request body in memory. Disabling it also prevents an LLM provider that shares a hostname with a credentialed host from receiving real credentials in prompts, and lets agent replies mentioning `CREDPROXY_TOKEN` post normally.
 
 ### Zero introspection surface
 

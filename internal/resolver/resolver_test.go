@@ -65,26 +65,74 @@ func TestHeadersWithSentinelSubstituted(t *testing.T) {
 	}
 }
 
-func TestBodyWithSentinelSubstituted(t *testing.T) {
+func TestBodyWithSentinelPassesThroughUnchanged(t *testing.T) {
 	r := newTestResolver(
 		map[string]string{"api.stripe.com": "mock://stripe/key"},
 		map[string]string{"mock://stripe/key": "sk_live_abc"},
 	)
+	r.cfg.ResolveBody = false
 
-	body := strings.NewReader(`{"api_key": "CREDPROXY_TOKEN"}`)
-	req := httptest.NewRequest(http.MethodPost, "https://api.stripe.com/charges", body)
+	original := `{"api_key": "CREDPROXY_TOKEN"}`
+	req := httptest.NewRequest(http.MethodPost, "https://api.stripe.com/charges", strings.NewReader(original))
 
-	err := r.ResolveRequest(req, "api.stripe.com")
-	if err != nil {
+	if err := r.ResolveRequest(req, "api.stripe.com"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	respBody, _ := io.ReadAll(req.Body)
-	if !bytes.Contains(respBody, []byte("sk_live_abc")) {
-		t.Errorf("body not substituted: got %q", string(respBody))
+	got, _ := io.ReadAll(req.Body)
+	if string(got) != original {
+		t.Errorf("body = %q, want unchanged %q", got, original)
 	}
-	if bytes.Contains(respBody, []byte("CREDPROXY_TOKEN")) {
-		t.Errorf("sentinel still present in body: %q", string(respBody))
+	if bytes.Contains(got, []byte("sk_live_abc")) {
+		t.Errorf("secret leaked into body: %q", got)
+	}
+}
+
+func TestBodyWithSentinelSubstitutedWhenEnabled(t *testing.T) {
+	cfg := newTestConfig(map[string]string{"api.stripe.com": "mock://stripe/key"})
+	cfg.ResolveBody = false
+	cfg.Hosts["api.stripe.com"] = config.HostConfig{
+		Credential:  "mock://stripe/key",
+		ResolveBody: true,
+	}
+	reg := providers.NewRegistry()
+	reg.Register(&mockProvider{resolved: map[string]string{"mock://stripe/key": "sk_live_abc"}})
+	r := New(cfg, reg)
+
+	req := httptest.NewRequest(http.MethodPost, "https://api.stripe.com/charges", strings.NewReader(`{"api_key":"CREDPROXY_TOKEN"}`))
+	if err := r.ResolveRequest(req, "api.stripe.com"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatalf("read resolved body: %v", err)
+	}
+	if string(got) != `{"api_key":"sk_live_abc"}` {
+		t.Errorf("body = %q, want substituted credential", got)
+	}
+	if req.ContentLength != int64(len(got)) {
+		t.Errorf("content length = %d, want %d", req.ContentLength, len(got))
+	}
+}
+
+func TestBodyWithSentinelSubstitutedWhenGloballyEnabled(t *testing.T) {
+	r := newTestResolver(
+		map[string]string{"api.stripe.com": "mock://stripe/key"},
+		map[string]string{"mock://stripe/key": "sk_live_abc"},
+	)
+	r.cfg.ResolveBody = true
+	req := httptest.NewRequest(http.MethodPost, "https://api.stripe.com/charges", strings.NewReader(`{"api_key":"CREDPROXY_TOKEN"}`))
+
+	if err := r.ResolveRequest(req, "api.stripe.com"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatalf("read resolved body: %v", err)
+	}
+	if string(got) != `{"api_key":"sk_live_abc"}` {
+		t.Errorf("body = %q, want substituted credential", got)
 	}
 }
 
